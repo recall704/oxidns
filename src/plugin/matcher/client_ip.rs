@@ -107,6 +107,10 @@ impl Matcher for ClientIpMatcher {
         self.client_ip_rules.contains_ip(client_ip)
             || self.ip_sets.iter().any(|set| set.contains_ip(client_ip))
     }
+
+    fn evidence(&self, context: &DnsContext) -> Option<String> {
+        Some(context.peer_addr().ip().to_string())
+    }
 }
 
 #[cfg(test)]

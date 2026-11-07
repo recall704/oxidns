@@ -1,0 +1,72 @@
+# OxiDNS rule database example configuration.
+#
+# Start with:
+#   oxidns start -c config.rules.yaml -d .
+#
+# Rules imported from `rule_db.import` are stored in SQLite on first start.
+# The WebUI rule page (http://127.0.0.1:9199/rules) and the management API
+# (/api/rules) then read, add, edit, and delete the same persisted rules.
+
+log:
+  level: info
+
+api:
+  http:
+    listen: "127.0.0.1:9199"
+    webui:
+      root: "./webui/out"
+
+rule_db:
+  path: "./data/rules.db"
+  import:
+    - category: ad
+      sources:
+        - "ads.example.com"
+    - category: gfw
+      sources:
+        - "proxy-blocked.example"
+    - category: china
+      sources:
+        - "&./examples/rules.example.txt"
+    - category: cdn
+      sources:
+        - "cdn.example.com"
+  import_mode: if-empty
+
+plugins:
+  # Read-only provider over the SQLite rule database. Without args.path it
+  # reuses the top-level rule_db store.
+  - tag: rule_store
+    type: sqlite_rule_set
+
+  # Optional: restrict a provider to specific rule categories.
+  # - tag: rule_store_ad
+  #   type: sqlite_rule_set
+  #   args:
+  #     categories: [ad]
+
+  # Match qnames/IPs against the persisted rules.
+  - tag: match_rules
+    type: qname
+    args:
+      - "$rule_store"
+
+  - tag: forward
+    type: forward
+    args:
+      upstreams:
+        - addr: "223.5.5.5"
+
+  - tag: main_sequence
+    type: sequence
+    args:
+      - matches: $match_rules
+        exec: reject 3
+      - exec: $forward
+      - exec: accept
+
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: "127.0.0.1:5335"

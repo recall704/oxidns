@@ -505,10 +505,13 @@ impl PluginFactory for TcpServerFactory {
             TcpServer {
                 tag: plugin_config.tag.clone(),
                 listen,
-                request_handle: Arc::new(RequestHandle {
+                request_handle: Arc::new(RequestHandle::new(
                     entry_executor,
-                    metrics: Some(metrics.clone()),
-                }),
+                    plugin_config.tag.clone(),
+                    protocol,
+                    Some(listen),
+                    Some(metrics.clone()),
+                )),
                 metrics,
                 #[cfg(feature = "server-dot")]
                 tls_acceptor,

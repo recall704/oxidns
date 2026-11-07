@@ -173,6 +173,14 @@ impl Executor for QueryRecorder {
         let instant = AppClock::now();
         let timestamp = Timestamp::now();
         let result = continue_next!(next, context);
+        let responder = context
+            .response_origin()
+            .map(|origin| model::ResponderJson {
+                tag: origin.executor_tag.to_string(),
+                kind: origin.kind.as_str().to_string(),
+                upstream: origin.upstream.as_deref().map(str::to_string),
+                elapsed_ms: origin.elapsed_ms,
+            });
         let pending_record = PendingRecord::new(
             request,
             context.response.clone(),
@@ -181,6 +189,11 @@ impl Executor for QueryRecorder {
             context.execution_path.clone(),
             step_start_index,
             context.peer_addr(),
+            context.server_tag().map(str::to_string),
+            context.protocol().map(str::to_string),
+            context.listen_addr().map(|addr| addr.to_string()),
+            context.entry_tag().map(str::to_string),
+            responder,
             result.as_ref().err().map(ToString::to_string),
         );
         backend.enqueue(pending_record);

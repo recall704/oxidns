@@ -59,6 +59,15 @@ test-standard:
 check-matrix: check-each-feature check-minimal check-standard check-full test-minimal test-standard
     cargo test --all-features
 
+# Fast local optimized build: incremental, no fat LTO. Do not publish these
+# artifacts; use `cargo build --release` for release binaries.
+build-fast:
+    cargo build --profile release-fast
+
+# Fast local Linux amd64 build. Requires `zig` and `cargo-zigbuild`.
+build-linux-fast:
+    cargo zigbuild --profile release-fast --target x86_64-unknown-linux-musl --bin oxidns
+
 # One message_codec Criterion benchmark as a hotpath report, run
 # HOTPATH_CRITERION_ITERATIONS times. The `hotpath` profile keeps the symbols
 # Callgrind needs, e.g.

@@ -108,8 +108,7 @@ import {
 import { usePluginAppliedStatus } from "@/hooks/use-plugin-applied";
 import { useI18n } from "@/lib/i18n/provider";
 import { WEBUI } from "@/lib/i18n/keys";
-import { DnsRecordDetailDialog } from "../dns-record-detail-dialog";
-import { QueryRecordFlowCanvas } from "../query-record-flow";
+import { QueryRecordTraceDialog } from "../query-record-trace";
 
 function QueryRecorderDetail(props: PluginDetailComponentProps) {
   const { t } = useI18n();
@@ -887,6 +886,7 @@ function QueryRecordsPanelInner({ tag }: { tag: string }) {
         </CardContent>
         <RecordDetailDialog
           record={selected}
+          recorderTag={tag}
           onClose={() => setSelected(null)}
         />
       </Card>
@@ -2208,131 +2208,20 @@ function FilterField({
 
 function RecordDetailDialog({
   record,
+  recorderTag,
   onClose,
 }: {
   record: QueryRecordDetail | null;
+  recorderTag: string;
   onClose: () => void;
 }) {
-  const { locale, t } = useI18n();
   const dependencyGraph = useAppStore((state) => state.dependencyGraph);
-  const plugins = useAppStore((state) => state.plugins);
-
   return (
-    <DnsRecordDetailDialog
-      open={Boolean(record)}
-      onOpenChange={(open) => !open && onClose()}
-      title={t(WEBUI.queryRecorder.detailTitle, { id: record?.id ?? "" })}
-      subtitle={
-        record ? formatFullTime(record.created_at_ms, locale) : undefined
-      }
-      status={record ? queryStatusBadge(record) : undefined}
-      summaryItems={
-        record
-          ? [
-              {
-                label: t(WEBUI.queryRecorder.clientLabel),
-                value: record.client_ip,
-                mono: true,
-              },
-              {
-                label: t(WEBUI.queryRecorder.requestIdLabel),
-                value: String(record.request_id),
-                mono: true,
-              },
-              {
-                label: t(WEBUI.queryRecorder.elapsedLabel),
-                value: `${record.elapsed_ms}ms`,
-                mono: true,
-              },
-              { label: "RCODE", value: record.rcode ?? "-", mono: true },
-              {
-                label: (
-                  <span className="inline-flex items-center gap-1">
-                    {t(WEBUI.dnsRecord.responseRecordsLabel)}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <button
-                          type="button"
-                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none"
-                          aria-label={t(WEBUI.dnsRecord.responseRecordsAria)}
-                        >
-                          <Info className="h-3.5 w-3.5" />
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent
-                        side="top"
-                        className="w-auto max-w-[16rem] p-2 text-xs"
-                      >
-                        {t(WEBUI.dnsRecord.responseRecordsTooltip)}
-                      </PopoverContent>
-                    </Popover>
-                  </span>
-                ),
-                value: `${record.answer_count} / ${record.authority_count} / ${record.additional_count}`,
-                mono: true,
-              },
-              {
-                label: t(WEBUI.queryRecorder.reqFlagsLabel),
-                value: `RD=${flag(record.req_rd)} CD=${flag(record.req_cd)} AD=${flag(record.req_ad)}`,
-                mono: true,
-                wide: true,
-              },
-              {
-                label: t(WEBUI.queryRecorder.respFlagsLabel),
-                value: record.has_response
-                  ? `AA=${flag(record.resp_aa)} TC=${flag(record.resp_tc)} RA=${flag(record.resp_ra)} AD=${flag(record.resp_ad)} CD=${flag(record.resp_cd)}`
-                  : "-",
-                mono: true,
-                wide: true,
-              },
-            ]
-          : []
-      }
-      questions={record?.questions_json}
-      sections={
-        record
-          ? [
-              {
-                title: t(WEBUI.dnsRecord.answerSection),
-                records: record.answers_json,
-                emptyLabel: t(WEBUI.dnsRecord.emptyAnswer),
-              },
-              {
-                title: t(WEBUI.dnsRecord.authoritySection),
-                records: record.authorities_json,
-                emptyLabel: t(WEBUI.dnsRecord.emptyAuthority),
-              },
-              {
-                title: t(WEBUI.dnsRecord.additionalSection),
-                records: record.additionals_json,
-                emptyLabel: t(WEBUI.dnsRecord.emptyAdditional),
-              },
-              {
-                title: t(WEBUI.dnsRecord.signatureSection),
-                records: record.signature_json,
-                emptyLabel: t(WEBUI.dnsRecord.emptySignature),
-              },
-            ]
-          : []
-      }
-      error={record?.error ?? null}
-      bottomBlocks={
-        record
-          ? [
-              {
-                title: t(WEBUI.queryRecorder.executionFlowTitle),
-                children: (
-                  <QueryRecordFlowCanvas
-                    record={record}
-                    dependencyGraph={dependencyGraph}
-                    plugins={plugins}
-                  />
-                ),
-              },
-            ]
-          : []
-      }
-      wide
+    <QueryRecordTraceDialog
+      record={record}
+      recorderTag={recorderTag}
+      graph={dependencyGraph ?? null}
+      onClose={onClose}
     />
   );
 }
@@ -2544,24 +2433,12 @@ function formatPercent(value: number) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-function flag(value: unknown) {
-  if (typeof value !== "boolean") return "-";
-  return value ? "1" : "0";
-}
-
 function formatTime(ms: number, locale: ReturnType<typeof useI18n>["locale"]) {
   return new Date(ms).toLocaleTimeString(locale, {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
   });
-}
-
-function formatFullTime(
-  ms: number,
-  locale: ReturnType<typeof useI18n>["locale"],
-) {
-  return new Date(ms).toLocaleString(locale);
 }
 
 function formatBucketLabel(

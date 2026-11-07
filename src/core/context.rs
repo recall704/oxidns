@@ -6,6 +6,7 @@
 use std::any::Any;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ahash::{AHashMap, AHashSet};
 
@@ -25,6 +26,10 @@ pub struct RequestMeta {
 pub struct IngressContext {
     peer_addr: SocketAddr,
     request_meta: RequestMeta,
+    server_tag: Option<Arc<str>>,
+    protocol: Option<Arc<str>>,
+    listen: Option<SocketAddr>,
+    entry: Option<Arc<str>>,
 }
 
 impl Default for IngressContext {
@@ -32,6 +37,10 @@ impl Default for IngressContext {
         Self {
             peer_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
             request_meta: RequestMeta::default(),
+            server_tag: None,
+            protocol: None,
+            listen: None,
+            entry: None,
         }
     }
 }
@@ -42,6 +51,10 @@ impl IngressContext {
         Self {
             peer_addr,
             request_meta: RequestMeta::default(),
+            server_tag: None,
+            protocol: None,
+            listen: None,
+            entry: None,
         }
     }
 
@@ -53,6 +66,40 @@ impl IngressContext {
     #[inline]
     pub fn set_peer_addr(&mut self, peer_addr: SocketAddr) {
         self.peer_addr = peer_addr;
+    }
+
+    #[inline]
+    pub fn server_tag(&self) -> Option<&str> {
+        self.server_tag.as_deref()
+    }
+
+    #[inline]
+    pub fn protocol(&self) -> Option<&str> {
+        self.protocol.as_deref()
+    }
+
+    #[inline]
+    pub fn listen(&self) -> Option<SocketAddr> {
+        self.listen
+    }
+
+    #[inline]
+    pub fn entry(&self) -> Option<&str> {
+        self.entry.as_deref()
+    }
+
+    /// Attach the inbound server identity captured by `RequestHandle`.
+    pub fn set_server_identity(
+        &mut self,
+        server_tag: Arc<str>,
+        protocol: Arc<str>,
+        listen: Option<SocketAddr>,
+        entry: Arc<str>,
+    ) {
+        self.server_tag = Some(server_tag);
+        self.protocol = Some(protocol);
+        self.listen = listen;
+        self.entry = Some(entry);
     }
 
     #[inline]
@@ -134,6 +181,81 @@ impl RuntimeContext {
     }
 }
 
+/// Optional per-event detail used by the request path view.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct TraceDetail {
+    /// Value observed by a matcher, such as the query name or client address.
+    pub observed: Option<Arc<str>>,
+    /// Jump/goto target sequence tag.
+    pub target: Option<Arc<str>>,
+    /// Responder or resolver source, such as an upstream address.
+    pub source: Option<Arc<str>>,
+    /// Small human-readable annotation (rcode, hit/miss, fallback reason).
+    pub note: Option<Arc<str>>,
+    /// Latency of the nested exchange this event describes.
+    pub elapsed_ms: Option<u64>,
+}
+
+/// How the response was produced.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ResponseOriginKind {
+    Executor,
+    Cache,
+    Hosts,
+    Forward,
+    Synthetic,
+    ServerFallback,
+    ServerError,
+}
+
+impl ResponseOriginKind {
+    #[inline]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Executor => "executor",
+            Self::Cache => "cache",
+            Self::Hosts => "hosts",
+            Self::Forward => "forward",
+            Self::Synthetic => "synthetic",
+            Self::ServerFallback => "server_fallback",
+            Self::ServerError => "server_error",
+        }
+    }
+}
+
+/// The executor and external source that produced the response.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ResponseOrigin {
+    pub executor_tag: Arc<str>,
+    pub kind: ResponseOriginKind,
+    pub upstream: Option<Arc<str>>,
+    pub elapsed_ms: Option<u64>,
+}
+
+impl ResponseOrigin {
+    #[inline]
+    pub fn new(executor_tag: impl Into<Arc<str>>, kind: ResponseOriginKind) -> Self {
+        Self {
+            executor_tag: executor_tag.into(),
+            kind,
+            upstream: None,
+            elapsed_ms: None,
+        }
+    }
+
+    #[inline]
+    pub fn with_upstream(mut self, upstream: impl Into<Arc<str>>) -> Self {
+        self.upstream = Some(upstream.into());
+        self
+    }
+
+    #[inline]
+    pub fn with_elapsed_ms(mut self, elapsed_ms: u64) -> Self {
+        self.elapsed_ms = Some(elapsed_ms);
+        self
+    }
+}
+
 /// One structured execution-path event captured from the sequence runtime.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ExecutionPathEvent {
@@ -142,6 +264,11 @@ pub struct ExecutionPathEvent {
     pub kind: String,
     pub tag: Option<String>,
     pub outcome: String,
+    /// Visual tree depth maintained by `ExecutionPath` scopes.
+    pub depth: u16,
+    /// Microseconds since the path started recording.
+    pub at_us: u64,
+    pub detail: Option<Arc<TraceDetail>>,
 }
 
 impl ExecutionPathEvent {
@@ -159,7 +286,16 @@ impl ExecutionPathEvent {
             kind: kind.into(),
             tag: tag.map(Into::into),
             outcome: outcome.into(),
+            depth: 0,
+            at_us: 0,
+            detail: None,
         }
+    }
+
+    #[inline]
+    pub fn with_detail(mut self, detail: TraceDetail) -> Self {
+        self.detail = Some(Arc::new(detail));
+        self
     }
 }
 
@@ -168,12 +304,18 @@ impl ExecutionPathEvent {
 pub struct ExecutionPath {
     enabled: bool,
     events: Vec<Arc<ExecutionPathEvent>>,
+    depth: u16,
+    sequence_tags: Vec<Arc<str>>,
+    started: Option<Instant>,
 }
 
 impl ExecutionPath {
     #[inline]
     pub fn enable(&mut self) {
-        self.enabled = true;
+        if !self.enabled {
+            self.enabled = true;
+            self.started = Some(Instant::now());
+        }
     }
 
     #[inline]
@@ -191,11 +333,59 @@ impl ExecutionPath {
         self.events.is_empty()
     }
 
+    /// Enter a non-sequence scope and return the previous depth.
     #[inline]
-    pub fn push(&mut self, event: ExecutionPathEvent) {
+    pub fn enter_scope(&mut self) -> u16 {
+        let previous = self.depth;
+        self.depth = self.depth.saturating_add(1);
+        previous
+    }
+
+    /// Restore the depth captured by [`Self::enter_scope`].
+    #[inline]
+    pub fn leave_scope(&mut self, previous: u16) {
+        self.depth = previous;
+    }
+
+    /// Enter a sequence invocation scope and return the previous depth.
+    #[inline]
+    pub fn enter_sequence(&mut self, tag: &Arc<str>) -> u16 {
         if self.enabled {
-            self.events.push(Arc::new(event));
+            self.sequence_tags.push(tag.clone());
         }
+        self.enter_scope()
+    }
+
+    /// Leave the current sequence invocation.
+    #[inline]
+    pub fn leave_sequence(&mut self, previous: u16) {
+        if self.enabled {
+            self.sequence_tags.pop();
+        }
+        self.leave_scope(previous);
+    }
+
+    #[inline]
+    pub fn current_sequence_tag(&self) -> Option<&str> {
+        self.sequence_tags.last().map(AsRef::as_ref)
+    }
+
+    #[inline]
+    pub fn push(&mut self, mut event: ExecutionPathEvent) {
+        if !self.enabled {
+            return;
+        }
+        event.depth = self.depth;
+        event.at_us = self
+            .started
+            .map(|started| started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        if event.sequence_tag.is_empty()
+            && let Some(tag) = self.sequence_tags.last()
+        {
+            event.sequence_tag = tag.to_string();
+        }
+        self.events.push(Arc::new(event));
     }
 
     #[inline]
@@ -216,6 +406,7 @@ pub struct DnsContext {
     pub response: Option<Message>,
     pub execution_path: ExecutionPath,
     pub runtime: RuntimeContext,
+    response_origin: Option<ResponseOrigin>,
 }
 
 impl DnsContext {
@@ -227,6 +418,7 @@ impl DnsContext {
             response: None,
             execution_path: ExecutionPath::default(),
             runtime: RuntimeContext::default(),
+            response_origin: None,
         }
     }
 
@@ -258,6 +450,38 @@ impl DnsContext {
     #[inline]
     pub fn url_path(&self) -> Option<&str> {
         self.ingress.url_path()
+    }
+
+    #[inline]
+    pub fn server_tag(&self) -> Option<&str> {
+        self.ingress.server_tag()
+    }
+
+    #[inline]
+    pub fn protocol(&self) -> Option<&str> {
+        self.ingress.protocol()
+    }
+
+    #[inline]
+    pub fn listen_addr(&self) -> Option<SocketAddr> {
+        self.ingress.listen()
+    }
+
+    #[inline]
+    pub fn entry_tag(&self) -> Option<&str> {
+        self.ingress.entry()
+    }
+
+    #[inline]
+    pub fn set_server_identity(
+        &mut self,
+        server_tag: Arc<str>,
+        protocol: Arc<str>,
+        listen: Option<SocketAddr>,
+        entry: Arc<str>,
+    ) {
+        self.ingress
+            .set_server_identity(server_tag, protocol, listen, entry);
     }
 
     #[inline]
@@ -298,6 +522,71 @@ impl DnsContext {
     #[inline]
     pub fn take_response(&mut self) -> Option<Message> {
         self.response.take()
+    }
+
+    #[inline]
+    pub fn response_origin(&self) -> Option<&ResponseOrigin> {
+        self.response_origin.as_ref()
+    }
+
+    #[inline]
+    pub fn set_response_origin(&mut self, origin: ResponseOrigin) {
+        self.response_origin = Some(origin);
+    }
+
+    /// Attribute a newly produced response to `executor_tag` unless a more
+    /// specific producer already claimed it.
+    #[inline]
+    pub fn ensure_response_origin(&mut self, executor_tag: &str) {
+        if self.response_origin.is_none() {
+            self.response_origin = Some(ResponseOrigin::new(
+                Arc::<str>::from(executor_tag),
+                ResponseOriginKind::Executor,
+            ));
+        }
+    }
+
+    /// Enter a nested trace scope and return the previous depth.
+    #[inline]
+    pub fn trace_enter(&mut self) -> u16 {
+        self.execution_path.enter_scope()
+    }
+
+    /// Restore a depth returned by [`Self::trace_enter`].
+    #[inline]
+    pub fn trace_leave(&mut self, previous: u16) {
+        self.execution_path.leave_scope(previous);
+    }
+
+    /// Enter a sequence invocation scope and return the previous depth.
+    #[inline]
+    pub fn trace_enter_sequence(&mut self, tag: &Arc<str>) -> u16 {
+        self.execution_path.enter_sequence(tag)
+    }
+
+    /// Leave a sequence invocation scope.
+    #[inline]
+    pub fn trace_leave_sequence(&mut self, previous: u16) {
+        self.execution_path.leave_sequence(previous);
+    }
+
+    /// Record a trace event emitted by a plugin rather than the sequence
+    /// runtime. No work is performed when path recording is disabled.
+    pub fn trace_event(
+        &mut self,
+        kind: &str,
+        tag: Option<&str>,
+        outcome: &str,
+        detail: Option<TraceDetail>,
+    ) {
+        if !self.execution_path_enabled() {
+            return;
+        }
+        let mut event = ExecutionPathEvent::new("", None, kind, tag, outcome);
+        if let Some(detail) = detail {
+            event = event.with_detail(detail);
+        }
+        self.push_execution_path_event(event);
     }
 
     #[inline]
@@ -374,6 +663,7 @@ impl DnsContext {
                 marks: self.runtime.marks.clone(),
                 extensions: AHashMap::new(),
             },
+            response_origin: self.response_origin.clone(),
         }
     }
 
@@ -384,6 +674,7 @@ impl DnsContext {
         self.execution_path = sub_ctx.execution_path;
         self.runtime.marks = sub_ctx.runtime.marks;
         self.runtime.extensions = sub_ctx.runtime.extensions;
+        self.response_origin = sub_ctx.response_origin;
     }
 }
 
@@ -523,6 +814,69 @@ mod tests {
         assert_eq!(
             ctx.execution_path.events_from(1)[0].tag.as_deref(),
             Some("forward")
+        );
+    }
+
+    #[test]
+    fn test_execution_path_records_depth_timing_and_detail() {
+        let mut ctx = make_context();
+        ctx.enable_execution_path();
+        let sequence_depth = ctx.trace_enter_sequence(&Arc::from("main"));
+        ctx.push_execution_path_event(ExecutionPathEvent::new(
+            "main",
+            Some(0),
+            "matcher",
+            Some("qname"),
+            "matched",
+        ));
+        let rule_depth = ctx.trace_enter();
+        ctx.push_execution_path_event(
+            ExecutionPathEvent::new("main", Some(0), "executor", Some("hosts"), "stop")
+                .with_detail(TraceDetail {
+                    observed: Some(Arc::from("api.example.com.")),
+                    source: Some(Arc::from("hosts")),
+                    ..Default::default()
+                }),
+        );
+        ctx.trace_leave(rule_depth);
+        ctx.trace_leave_sequence(sequence_depth);
+
+        let events = ctx.execution_path_events();
+        assert_eq!(events[0].depth, 1);
+        assert_eq!(events[1].depth, 2);
+        assert!(events[1].at_us >= events[0].at_us);
+        assert_eq!(
+            events[1]
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.observed.as_deref()),
+            Some("api.example.com.")
+        );
+    }
+
+    #[test]
+    fn test_trace_event_uses_current_sequence_tag() {
+        let mut ctx = make_context();
+        ctx.enable_execution_path();
+        let sequence_depth = ctx.trace_enter_sequence(&Arc::from("main"));
+        ctx.trace_event(
+            "resolver",
+            Some("223.5.5.5:53"),
+            "stop",
+            Some(TraceDetail {
+                elapsed_ms: Some(18),
+                ..Default::default()
+            }),
+        );
+        ctx.trace_leave_sequence(sequence_depth);
+
+        let event = &ctx.execution_path_events()[0];
+        assert_eq!(event.sequence_tag, "main");
+        assert_eq!(event.kind, "resolver");
+        assert_eq!(event.depth, 1);
+        assert_eq!(
+            event.detail.as_ref().and_then(|detail| detail.elapsed_ms),
+            Some(18)
         );
     }
 }

@@ -96,6 +96,18 @@ impl Matcher for MarkMatcher {
     fn is_match(&self, context: &mut DnsContext) -> bool {
         !context.marks().is_disjoint(&self.marks)
     }
+
+    fn evidence(&self, context: &DnsContext) -> Option<String> {
+        let mut marks: Vec<_> = context.marks().iter().copied().collect();
+        marks.sort_unstable();
+        Some(
+            marks
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
 }
 
 #[cfg(test)]

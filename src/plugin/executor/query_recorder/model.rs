@@ -79,7 +79,16 @@ pub(super) struct EdnsJson {
     pub(super) options: Vec<EdnsOptionJson>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(super) struct StepDetailJson {
+    pub(super) observed: Option<String>,
+    pub(super) target: Option<String>,
+    pub(super) source: Option<String>,
+    pub(super) note: Option<String>,
+    pub(super) elapsed_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub(super) struct StepJson {
     pub(super) event_index: usize,
     pub(super) sequence_tag: String,
@@ -87,9 +96,33 @@ pub(super) struct StepJson {
     pub(super) kind: String,
     pub(super) tag: Option<String>,
     pub(super) outcome: String,
+    pub(super) depth: u16,
+    pub(super) at_us: u64,
+    pub(super) detail: Option<StepDetailJson>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Per-record step metadata kept in the compressed payload. It is deliberately
+/// excluded from the shared trace fingerprint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct StepAnnotation {
+    pub(super) event_index: usize,
+    pub(super) depth: u16,
+    pub(super) at_us: u64,
+    pub(super) detail: Option<StepDetailJson>,
+}
+
+impl StepAnnotation {
+    pub(super) fn from_step(step: &StepJson) -> Self {
+        Self {
+            event_index: step.event_index,
+            depth: step.depth,
+            at_us: step.at_us,
+            detail: step.detail.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(super) struct RecordRow {
     pub(super) id: i64,
     pub(super) created_at_ms: i64,
@@ -118,6 +151,14 @@ pub(super) struct RecordRow {
     pub(super) additionals_json: Vec<RecordJson>,
     pub(super) signature_json: Vec<RecordJson>,
     pub(super) resp_edns_json: Option<EdnsJson>,
+    pub(super) server_tag: Option<String>,
+    pub(super) protocol: Option<String>,
+    pub(super) listen: Option<String>,
+    pub(super) entry_tag: Option<String>,
+    pub(super) responder_tag: Option<String>,
+    pub(super) responder_kind: Option<String>,
+    pub(super) responder_upstream: Option<String>,
+    pub(super) responder_elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -136,7 +177,20 @@ pub(super) struct PendingRecord {
     pub(super) exec_path: ExecutionPath,
     pub(super) step_start_index: usize,
     pub(super) client_ip: SocketAddr,
+    pub(super) server_tag: Option<String>,
+    pub(super) protocol: Option<String>,
+    pub(super) listen: Option<String>,
+    pub(super) entry_tag: Option<String>,
+    pub(super) responder: Option<ResponderJson>,
     pub(super) error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResponderJson {
+    pub(super) tag: String,
+    pub(super) kind: String,
+    pub(super) upstream: Option<String>,
+    pub(super) elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

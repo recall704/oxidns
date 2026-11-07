@@ -39,6 +39,9 @@ macro_rules! register_plugin_api {
     (@register $plugin_api:ident, POST, $path:expr, $handler:expr) => {
         $plugin_api.post($path, std::sync::Arc::new($handler))
     };
+    (@register $plugin_api:ident, PUT, $path:expr, $handler:expr) => {
+        $plugin_api.put($path, std::sync::Arc::new($handler))
+    };
     (@register $plugin_api:ident, DELETE, $path:expr, $handler:expr) => {
         $plugin_api.delete($path, std::sync::Arc::new($handler))
     };
@@ -79,6 +82,9 @@ macro_rules! register_api_route {
     };
     (@register $api_register:ident, POST, $path:expr, $handler:expr) => {
         $api_register.register_post($path, std::sync::Arc::new($handler))
+    };
+    (@register $api_register:ident, PUT, $path:expr, $handler:expr) => {
+        $api_register.register_put($path, std::sync::Arc::new($handler))
     };
     (@register $api_register:ident, DELETE, $path:expr, $handler:expr) => {
         $api_register.register_delete($path, std::sync::Arc::new($handler))

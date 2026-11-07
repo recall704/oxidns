@@ -397,10 +397,13 @@ impl PluginFactory for QuicServerFactory {
                 listen,
                 server_config,
                 idle_timeout: quic_config.idle_timeout,
-                request_handle: Arc::new(RequestHandle {
+                request_handle: Arc::new(RequestHandle::new(
                     entry_executor,
-                    metrics: Some(metrics.clone()),
-                }),
+                    plugin_config.tag.clone(),
+                    "doq",
+                    Some(listen),
+                    Some(metrics.clone()),
+                )),
                 metrics,
                 shutdown_tx: watch::channel(false).0,
                 task_handle: Mutex::new(None),

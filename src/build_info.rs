@@ -193,6 +193,11 @@ fn enabled_public_features() -> Vec<&'static str> {
         cfg!(feature = "provider-adguard-rule"),
         "provider-adguard-rule",
     );
+    push_feature(
+        &mut features,
+        cfg!(feature = "provider-sqlite-rule"),
+        "provider-sqlite-rule",
+    );
     push_feature(&mut features, cfg!(feature = "hotpath"), "hotpath");
     push_feature(
         &mut features,

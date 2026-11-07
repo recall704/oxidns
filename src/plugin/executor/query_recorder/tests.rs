@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use rusqlite::Connection;
@@ -10,8 +11,8 @@ use tempfile::NamedTempFile;
 use super::backend::WriterCommand;
 use super::model::{
     DistributionQuery, LatencyQuery, ListQuery, PendingRecord, PluginStatsKind, PluginsStatsQuery,
-    QueryRecordFilter, QueryRecordStatus, QueryRecorderConfig, TimeseriesBucket, TimeseriesQuery,
-    TopQuery,
+    QueryRecordFilter, QueryRecordStatus, QueryRecorderConfig, ResponderJson, TimeseriesBucket,
+    TimeseriesQuery, TopQuery,
 };
 use super::store::{
     create_schema, load_latency_summary, load_plugin_stats, load_qtype_distribution,
@@ -19,7 +20,9 @@ use super::store::{
     open_reader_database, open_writer_database, query_records, table_names,
 };
 use super::{QueryRecorder, QueryRecorderFactory, resolve_config};
-use crate::core::context::{DnsContext, ExecutionPathEvent};
+use crate::core::context::{
+    DnsContext, ExecutionPathEvent, ResponseOrigin, ResponseOriginKind, TraceDetail,
+};
 use crate::infra::clock::AppClock;
 use crate::infra::error::DnsError;
 use crate::plugin::executor::{ExecStep, Executor};
@@ -156,8 +159,84 @@ fn pending_record(
         ctx.execution_path.clone(),
         0,
         ctx.peer_addr(),
+        None,
+        None,
+        None,
+        None,
+        None,
         error.map(ToString::to_string),
     )
+}
+
+#[test]
+fn test_pending_record_captures_ingress_responder_and_step_annotations() {
+    let mut ctx = test_context();
+    ctx.set_server_identity(
+        Arc::from("udp_main"),
+        Arc::from("udp"),
+        Some("0.0.0.0:53".parse().unwrap()),
+        Arc::from("main"),
+    );
+    ctx.enable_execution_path();
+    let sequence = ctx.trace_enter_sequence(&Arc::from("main"));
+    let rule = ctx.trace_enter();
+    ctx.push_execution_path_event(
+        ExecutionPathEvent::new("main", Some(0), "matcher", Some("qname"), "matched").with_detail(
+            TraceDetail {
+                observed: Some(Arc::from("api.example.com.")),
+                ..Default::default()
+            },
+        ),
+    );
+    let response = ctx.request.response(Rcode::NoError);
+    ctx.set_response(response);
+    ctx.set_response_origin(
+        ResponseOrigin::new(Arc::from("forward_local"), ResponseOriginKind::Forward)
+            .with_upstream(Arc::from("223.5.5.5:53"))
+            .with_elapsed_ms(18),
+    );
+    ctx.trace_leave(rule);
+    ctx.trace_leave_sequence(sequence);
+
+    let responder = ctx.response_origin().map(|origin| ResponderJson {
+        tag: origin.executor_tag.to_string(),
+        kind: origin.kind.as_str().to_string(),
+        upstream: origin.upstream.as_deref().map(str::to_string),
+        elapsed_ms: origin.elapsed_ms,
+    });
+    let pending = PendingRecord::new(
+        ctx.request.clone(),
+        ctx.response.clone(),
+        100,
+        18,
+        ctx.execution_path.clone(),
+        0,
+        ctx.peer_addr(),
+        ctx.server_tag().map(str::to_string),
+        ctx.protocol().map(str::to_string),
+        ctx.listen_addr().map(|addr| addr.to_string()),
+        ctx.entry_tag().map(str::to_string),
+        responder,
+        None,
+    );
+    let (record, steps) = pending.take_to_record();
+
+    assert_eq!(record.server_tag.as_deref(), Some("udp_main"));
+    assert_eq!(record.protocol.as_deref(), Some("udp"));
+    assert_eq!(record.listen.as_deref(), Some("0.0.0.0:53"));
+    assert_eq!(record.entry_tag.as_deref(), Some("main"));
+    assert_eq!(record.responder_tag.as_deref(), Some("forward_local"));
+    assert_eq!(record.responder_kind.as_deref(), Some("forward"));
+    assert_eq!(record.responder_upstream.as_deref(), Some("223.5.5.5:53"));
+    assert_eq!(record.responder_elapsed_ms, Some(18));
+    assert_eq!(steps[0].depth, 2);
+    assert_eq!(
+        steps[0]
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.observed.as_deref()),
+        Some("api.example.com.")
+    );
 }
 
 #[test]
@@ -242,6 +321,11 @@ fn test_record_capture_without_response_uses_empty_sections() {
         ctx.execution_path.clone(),
         0,
         ctx.peer_addr(),
+        None,
+        None,
+        None,
+        None,
+        None,
         Some(DnsError::plugin("boom").to_string()),
     );
     let (record, steps) = pending.take_to_record();
@@ -293,6 +377,11 @@ fn test_record_capture_with_structured_response() {
         ctx.execution_path.clone(),
         0,
         ctx.peer_addr(),
+        None,
+        None,
+        None,
+        None,
+        None,
         None,
     );
     let (record, _) = pending.take_to_record();

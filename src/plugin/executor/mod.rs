@@ -118,7 +118,11 @@ pub trait Executor: Plugin {
         context: &mut DnsContext,
         next: Option<ExecutorNext>,
     ) -> Result<ExecStep> {
+        let had_response = context.response().is_some();
         let result = self.execute(context).await?;
+        if !had_response && context.response().is_some() {
+            context.ensure_response_origin(self.tag());
+        }
         match result {
             ExecStep::Next => continue_next!(next, context),
             ExecStep::Stop | ExecStep::Return => Ok(result),

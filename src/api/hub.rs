@@ -65,6 +65,11 @@ impl ApiRegister {
         self.register_route(Method::DELETE, path, handler)
     }
 
+    /// Register one PUT handler under an absolute API path.
+    pub fn register_put(&self, path: &str, handler: Arc<dyn ApiHandler>) -> Result<()> {
+        self.register_route(Method::PUT, path, handler)
+    }
+
     /// Register one handler using path-prefix matching under an absolute API
     /// path.
     pub fn register_prefix_route(
@@ -211,6 +216,11 @@ impl PluginApiRegister {
     /// Register one DELETE handler under this plugin namespace.
     pub fn delete(&self, subpath: &str, handler: Arc<dyn ApiHandler>) -> Result<()> {
         self.route(Method::DELETE, subpath, handler)
+    }
+
+    /// Register one PUT handler under this plugin namespace.
+    pub fn put(&self, subpath: &str, handler: Arc<dyn ApiHandler>) -> Result<()> {
+        self.route(Method::PUT, subpath, handler)
     }
 
     /// Register one prefix handler under this plugin namespace.

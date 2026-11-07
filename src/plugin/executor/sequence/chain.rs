@@ -8,7 +8,8 @@ use tracing::debug;
 
 use crate::core::context::DnsContext;
 #[cfg(feature = "_sequence-step-recording")]
-use crate::core::context::ExecutionPathEvent;
+use crate::core::context::{ExecutionPathEvent, TraceDetail};
+use crate::core::context::{ResponseOrigin, ResponseOriginKind};
 use crate::infra::error::{DnsError, Result};
 use crate::plugin::executor::sequence::{
     BuiltinKind, PluginRef, Rule, parse_control_flow_sequence_tag, parse_matcher_expr,
@@ -20,14 +21,14 @@ use crate::proto::Rcode;
 
 #[cfg(feature = "_sequence-step-recording")]
 macro_rules! record_sequence_event {
-    ($program:expr, $context:expr, $node_index:expr, $kind:expr, $tag:expr, $outcome:expr $(,)?) => {
-        $program.record_event($context, $node_index, $kind, $tag, $outcome);
+    ($program:expr, $context:expr, $node_index:expr, $kind:expr, $tag:expr, $outcome:expr, $detail:expr $(,)?) => {
+        $program.record_event($context, $node_index, $kind, $tag, $outcome, $detail);
     };
 }
 
 #[cfg(not(feature = "_sequence-step-recording"))]
 macro_rules! record_sequence_event {
-    ($program:expr, $context:expr, $node_index:expr, $kind:expr, $tag:expr, $outcome:expr $(,)?) => {};
+    ($program:expr, $context:expr, $node_index:expr, $kind:expr, $tag:expr, $outcome:expr, $detail:expr $(,)?) => {};
 }
 
 #[derive(Debug)]
@@ -80,7 +81,7 @@ enum InstructionOp {
 #[derive(Debug)]
 struct Instruction {
     /// Original node index inside the owning sequence.
-    #[cfg(feature = "_sequence-step-recording")]
+    #[cfg_attr(not(feature = "_sequence-step-recording"), allow(dead_code))]
     node_index: usize,
     /// All matchers that must pass before the op is executed.
     matchers: Vec<MatcherRef>,
@@ -89,10 +90,9 @@ struct Instruction {
 }
 
 impl Instruction {
-    fn new(_node_index: usize, matchers: Vec<MatcherRef>, op: InstructionOp) -> Self {
+    fn new(node_index: usize, matchers: Vec<MatcherRef>, op: InstructionOp) -> Self {
         Self {
-            #[cfg(feature = "_sequence-step-recording")]
-            node_index: _node_index,
+            node_index,
             matchers,
             op,
         }
@@ -102,8 +102,7 @@ impl Instruction {
 #[derive(Debug)]
 pub struct ChainProgram {
     /// Owning sequence tag for execution-path attribution.
-    #[cfg(feature = "_sequence-step-recording")]
-    sequence_tag: String,
+    sequence_tag: Arc<str>,
     /// Flattened instruction stream executed by a program counter.
     instructions: Vec<Instruction>,
 }
@@ -115,10 +114,9 @@ enum InstructionFlow {
 }
 
 impl ChainProgram {
-    fn new(_sequence_tag: String, instructions: Vec<Instruction>) -> Self {
+    fn new(sequence_tag: String, instructions: Vec<Instruction>) -> Self {
         Self {
-            #[cfg(feature = "_sequence-step-recording")]
-            sequence_tag: _sequence_tag,
+            sequence_tag: Arc::from(sequence_tag),
             instructions,
         }
     }
@@ -130,7 +128,10 @@ impl ChainProgram {
     /// - Execute either executor opcode or builtin opcode.
     /// - Advance `pc` according to returned [`ExecStep`] / builtin semantics.
     pub async fn run(self: &Arc<Self>, context: &mut DnsContext) -> Result<ExecStep> {
-        self.run_from_inner(context, 0).await
+        let previous = context.trace_enter_sequence(&self.sequence_tag);
+        let result = self.run_from_inner(context, 0).await;
+        context.trace_leave_sequence(previous);
+        result
     }
 
     async fn run_from_inner(
@@ -140,43 +141,42 @@ impl ChainProgram {
     ) -> Result<ExecStep> {
         while pc < self.instructions.len() {
             let instruction = &self.instructions[pc];
-            if !self.matches_instruction(context, instruction) {
-                pc += 1;
-                continue;
-            }
+            let previous = context.trace_enter();
+            let flow = self.run_instruction(context, instruction, pc).await;
+            context.trace_leave(previous);
 
-            match &instruction.op {
-                InstructionOp::Executor(executor) => {
-                    match self
-                        .run_executor_instruction(context, instruction, executor)
-                        .await?
-                    {
-                        InstructionFlow::Continue => pc += 1,
-                        InstructionFlow::Complete(step) => return Ok(step),
-                    }
-                }
-                InstructionOp::ExecutorWithNext(executor) => {
-                    match self
-                        .run_executor_with_next_instruction(context, instruction, executor, pc)
-                        .await?
-                    {
-                        InstructionFlow::Continue => pc += 1,
-                        InstructionFlow::Complete(step) => return Ok(step),
-                    }
-                }
-                InstructionOp::Builtin(op) => {
-                    match self
-                        .run_builtin_instruction(context, instruction, op)
-                        .await?
-                    {
-                        InstructionFlow::Continue => pc += 1,
-                        InstructionFlow::Complete(step) => return Ok(step),
-                    }
-                }
+            match flow? {
+                InstructionFlow::Continue => pc += 1,
+                InstructionFlow::Complete(step) => return Ok(step),
             }
         }
 
         Ok(ExecStep::Next)
+    }
+
+    async fn run_instruction(
+        self: &Arc<Self>,
+        context: &mut DnsContext,
+        instruction: &Instruction,
+        pc: usize,
+    ) -> Result<InstructionFlow> {
+        if !self.matches_instruction(context, instruction) {
+            return Ok(InstructionFlow::Continue);
+        }
+
+        match &instruction.op {
+            InstructionOp::Executor(executor) => {
+                self.run_executor_instruction(context, instruction, executor)
+                    .await
+            }
+            InstructionOp::ExecutorWithNext(executor) => {
+                self.run_executor_with_next_instruction(context, instruction, executor, pc)
+                    .await
+            }
+            InstructionOp::Builtin(op) => {
+                self.run_builtin_instruction(context, instruction, op).await
+            }
+        }
     }
 
     async fn run_executor_instruction(
@@ -192,9 +192,14 @@ impl ChainProgram {
             "executor",
             Some(executor.tag()),
             "entered",
+            None,
         );
+        let had_response = context.response().is_some();
         match executor.execute(context).await {
             Ok(ExecStep::Next) => {
+                if !had_response && context.response().is_some() {
+                    context.ensure_response_origin(executor.tag());
+                }
                 record_sequence_event!(
                     self,
                     context,
@@ -202,10 +207,14 @@ impl ChainProgram {
                     "executor",
                     Some(executor.tag()),
                     "next",
+                    None,
                 );
                 Ok(InstructionFlow::Continue)
             }
             Ok(step @ (ExecStep::Stop | ExecStep::Return)) => {
+                if !had_response && context.response().is_some() {
+                    context.ensure_response_origin(executor.tag());
+                }
                 record_sequence_event!(
                     self,
                     context,
@@ -213,6 +222,7 @@ impl ChainProgram {
                     "executor",
                     Some(executor.tag()),
                     exec_step_outcome(step),
+                    response_detail(context, executor.tag()),
                 );
                 Ok(InstructionFlow::Complete(step))
             }
@@ -224,6 +234,10 @@ impl ChainProgram {
                     "executor",
                     Some(executor.tag()),
                     "error",
+                    Some(TraceDetail {
+                        note: Some(Arc::from(err.to_string())),
+                        ..Default::default()
+                    }),
                 );
                 Err(err)
             }
@@ -244,9 +258,19 @@ impl ChainProgram {
             "executor",
             Some(executor.tag()),
             "entered",
+            None,
         );
+        let scope = context.trace_enter();
+        let had_response = context.response().is_some();
         let next = ExecutorNext::new(self.clone(), pc + 1);
-        match executor.execute_with_next(context, Some(next)).await {
+        let result = executor.execute_with_next(context, Some(next)).await;
+        context.trace_leave(scope);
+
+        if result.is_ok() && !had_response && context.response().is_some() {
+            context.ensure_response_origin(executor.tag());
+        }
+
+        match result {
             Ok(step) => {
                 record_sequence_event!(
                     self,
@@ -255,6 +279,7 @@ impl ChainProgram {
                     "executor",
                     Some(executor.tag()),
                     exec_step_outcome(step),
+                    response_detail(context, executor.tag()),
                 );
                 Ok(InstructionFlow::Complete(step))
             }
@@ -266,6 +291,10 @@ impl ChainProgram {
                     "executor",
                     Some(executor.tag()),
                     "error",
+                    Some(TraceDetail {
+                        note: Some(Arc::from(err.to_string())),
+                        ..Default::default()
+                    }),
                 );
                 Err(err)
             }
@@ -287,6 +316,7 @@ impl ChainProgram {
                     "builtin",
                     Some("accept"),
                     "stop",
+                    None,
                 );
                 Ok(InstructionFlow::Complete(ExecStep::Stop))
             }
@@ -298,11 +328,16 @@ impl ChainProgram {
                     "builtin",
                     Some("return"),
                     "return",
+                    None,
                 );
                 Ok(InstructionFlow::Complete(ExecStep::Return))
             }
             BuiltinOp::Reject { rcode } => {
                 context.set_response(context.request().response(*rcode));
+                context.set_response_origin(ResponseOrigin::new(
+                    Arc::from("reject"),
+                    ResponseOriginKind::Synthetic,
+                ));
                 record_sequence_event!(
                     self,
                     context,
@@ -310,6 +345,10 @@ impl ChainProgram {
                     "builtin",
                     Some("reject"),
                     "stop",
+                    Some(TraceDetail {
+                        note: Some(Arc::from(rcode.to_string())),
+                        ..Default::default()
+                    }),
                 );
                 Ok(InstructionFlow::Complete(ExecStep::Stop))
             }
@@ -322,6 +361,10 @@ impl ChainProgram {
                         "builtin",
                         Some("jump"),
                         exec_step_outcome(step),
+                        Some(TraceDetail {
+                            target: Some(Arc::from(executor.tag())),
+                            ..Default::default()
+                        }),
                     );
                     match step {
                         ExecStep::Stop => Ok(InstructionFlow::Complete(ExecStep::Stop)),
@@ -336,6 +379,11 @@ impl ChainProgram {
                         "builtin",
                         Some("jump"),
                         "error",
+                        Some(TraceDetail {
+                            target: Some(Arc::from(executor.tag())),
+                            note: Some(Arc::from(err.to_string())),
+                            ..Default::default()
+                        }),
                     );
                     Err(err)
                 }
@@ -349,6 +397,10 @@ impl ChainProgram {
                         "builtin",
                         Some("goto"),
                         exec_step_outcome(step),
+                        Some(TraceDetail {
+                            target: Some(Arc::from(executor.tag())),
+                            ..Default::default()
+                        }),
                     );
                     Ok(InstructionFlow::Complete(step))
                 }
@@ -360,6 +412,11 @@ impl ChainProgram {
                         "builtin",
                         Some("goto"),
                         "error",
+                        Some(TraceDetail {
+                            target: Some(Arc::from(executor.tag())),
+                            note: Some(Arc::from(err.to_string())),
+                            ..Default::default()
+                        }),
                     );
                     Err(err)
                 }
@@ -377,6 +434,10 @@ impl ChainProgram {
                     "builtin",
                     Some(mode.builtin_name()),
                     "next",
+                    Some(TraceDetail {
+                        observed: Some(Arc::from(marks_text(context.marks().iter().copied()))),
+                        ..Default::default()
+                    }),
                 );
                 Ok(InstructionFlow::Continue)
             }
@@ -386,6 +447,13 @@ impl ChainProgram {
     fn matches_instruction(&self, context: &mut DnsContext, instruction: &Instruction) -> bool {
         for matcher_ref in &instruction.matchers {
             let evaluation = matcher_ref.evaluate(context);
+            #[cfg(feature = "_sequence-step-recording")]
+            let detail = matcher_ref.evidence(context).map(|observed| TraceDetail {
+                observed: Some(Arc::from(observed)),
+                ..Default::default()
+            });
+            #[cfg(not(feature = "_sequence-step-recording"))]
+            let detail = ();
             record_sequence_event!(
                 self,
                 context,
@@ -393,7 +461,10 @@ impl ChainProgram {
                 "matcher",
                 Some(matcher_ref.tag()),
                 evaluation.outcome(),
+                detail,
             );
+            #[cfg(not(feature = "_sequence-step-recording"))]
+            let _ = detail;
             if !evaluation.is_match() {
                 debug!("instruction skipped, matcher: {}", matcher_ref.tag());
                 return false;
@@ -410,17 +481,22 @@ impl ChainProgram {
         kind: &str,
         tag: Option<&str>,
         outcome: &str,
+        detail: Option<TraceDetail>,
     ) {
         if !context.execution_path_enabled() {
             return;
         }
-        context.push_execution_path_event(ExecutionPathEvent::new(
-            self.sequence_tag.as_str(),
+        let mut event = ExecutionPathEvent::new(
+            self.sequence_tag.as_ref(),
             Some(node_index),
             kind,
             tag,
             outcome,
-        ));
+        );
+        if let Some(detail) = detail {
+            event = event.with_detail(detail);
+        }
+        context.push_execution_path_event(event);
     }
 }
 
@@ -431,6 +507,31 @@ fn exec_step_outcome(step: ExecStep) -> &'static str {
         ExecStep::Stop => "stop",
         ExecStep::Return => "return",
     }
+}
+
+#[cfg(feature = "_sequence-step-recording")]
+fn response_detail(context: &DnsContext, executor_tag: &str) -> Option<TraceDetail> {
+    let origin = context.response_origin()?;
+    if origin.executor_tag.as_ref() != executor_tag {
+        return None;
+    }
+    Some(TraceDetail {
+        source: origin.upstream.clone(),
+        note: Some(Arc::from(origin.kind.as_str())),
+        elapsed_ms: origin.elapsed_ms,
+        ..Default::default()
+    })
+}
+
+#[cfg(feature = "_sequence-step-recording")]
+fn marks_text(values: impl Iterator<Item = u32>) -> String {
+    let mut values: Vec<_> = values.collect();
+    values.sort_unstable();
+    values
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[derive(Debug, Clone)]

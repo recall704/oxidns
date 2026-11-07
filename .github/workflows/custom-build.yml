@@ -63,6 +63,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # CI artifacts are built from scratch; incremental state is never reused.
+  CARGO_INCREMENTAL: 0
+
 jobs:
   # -------------------------------------------------------------------------
   # Validate inputs and expand the targets JSON into a matrix annotated with

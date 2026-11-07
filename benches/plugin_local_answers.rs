@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use oxidns::config::types::{
-    ApiConfig, Config, LogConfig, NetworkConfig, PluginConfig, RuntimeConfig,
+    ApiConfig, Config, LogConfig, NetworkConfig, PluginConfig, RuleDbConfig, RuntimeConfig,
 };
 use oxidns::core::context::DnsContext;
 use oxidns::plugin::{PluginRegistry, init as init_plugins};
@@ -48,6 +48,7 @@ fn make_config(plugin: PluginConfig) -> Config {
         api: ApiConfig::default(),
         log: LogConfig::default(),
         network: NetworkConfig::default(),
+        rule_db: RuleDbConfig::default(),
         plugins: vec![plugin],
         include: Vec::new(),
     }

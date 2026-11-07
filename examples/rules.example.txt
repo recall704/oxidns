@@ -1,0 +1,11 @@
+# Sample rule sources imported into the SQLite rule database on first start.
+# Lines starting with '#' are comments. Rules accept the same prefixes as
+# domain_set: full:, domain:, keyword:, regexp:. Bare values are suffix domains
+# unless they parse as an IP address or CIDR prefix.
+
+suffix.rules.example
+full:api.rules.example
+keyword:tracker
+
+198.51.100.0/24
+2001:db8::/32

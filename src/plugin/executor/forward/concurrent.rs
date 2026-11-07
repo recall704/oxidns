@@ -10,8 +10,8 @@ use tracing::{Level, debug, event_enabled, info, warn};
 
 use super::is_timeout_error;
 use super::metrics::ForwardMetrics;
-use super::selection::{ResponseSelectionMode, SelectedResponse, select_response};
-use crate::core::context::DnsContext;
+use super::selection::{ResponseSelectionMode, SelectedResponse, UpstreamReply, select_response};
+use crate::core::context::{DnsContext, ResponseOrigin, ResponseOriginKind, TraceDetail};
 use crate::core::response::ResponseDisposition;
 use crate::infra::error::{DnsError, Result};
 use crate::infra::network::upstream::Upstream;
@@ -65,7 +65,30 @@ impl Executor for ConcurrentForwarder {
             if selected.disposition == Some(ResponseDisposition::IncompleteAlias) {
                 self.metrics.record_incomplete_alias_selected();
             }
+            let upstream = selected.upstream.clone();
+            let elapsed_ms = selected.elapsed_ms;
             context.set_response(selected.message);
+            let mut origin = ResponseOrigin::new(
+                Arc::<str>::from(self.tag.as_str()),
+                ResponseOriginKind::Forward,
+            );
+            origin.upstream = upstream.clone();
+            origin.elapsed_ms = elapsed_ms;
+            context.set_response_origin(origin);
+            if let Some(upstream) = upstream {
+                let previous = context.trace_enter();
+                context.trace_event(
+                    "resolver",
+                    Some(upstream.as_ref()),
+                    "stop",
+                    Some(TraceDetail {
+                        source: Some(upstream.clone()),
+                        elapsed_ms,
+                        ..Default::default()
+                    }),
+                );
+                context.trace_leave(previous);
+            }
             self.metrics.record_success(start_ms);
             return Ok(self.completion_step());
         }
@@ -112,7 +135,10 @@ impl ConcurrentForwarder {
             let metrics = self.metrics.clone();
             join_set.spawn(async move {
                 let up_start = metrics.record_upstream_start(selected_idx);
+                let addr: Arc<str> = Arc::from(upstream.connection_info().raw_addr.as_str());
                 let result: Result<Message> = upstream.query(message).await;
+                let elapsed_ms =
+                    crate::infra::clock::AppClock::elapsed_millis().saturating_sub(up_start);
                 match &result {
                     Ok(_) => metrics.record_upstream_success(selected_idx, up_start),
                     Err(e) => {
@@ -122,11 +148,14 @@ impl ConcurrentForwarder {
                 if event_enabled!(Level::DEBUG) {
                     debug!(
                         "DNS ConcurrentForwarder received message {}, remote_addr: {}",
-                        selected_idx,
-                        upstream.connection_info().raw_addr
+                        selected_idx, addr
                     );
                 }
-                result
+                UpstreamReply {
+                    addr,
+                    elapsed_ms,
+                    result,
+                }
             });
         }
 

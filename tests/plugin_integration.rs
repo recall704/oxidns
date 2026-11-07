@@ -3173,6 +3173,95 @@ plugins:
     Ok(())
 }
 
+#[cfg(feature = "provider-sqlite-rule")]
+#[tokio::test]
+async fn test_sqlite_rule_set_provider_imports_and_reflects_runtime_changes() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let database = temp_dir.path().join("rules.db");
+    let rules_file = temp_dir.path().join("rules.txt");
+    fs::write(&rules_file, "keyword:tracker\n198.51.100.0/24\n")?;
+
+    let yaml = format!(
+        r#"
+log:
+  level: info
+plugins:
+  - tag: rule_store
+    type: sqlite_rule_set
+    args:
+      path: "{}"
+      import:
+        - category: ad
+          sources:
+            - "&{}"
+        - category: gfw
+          sources:
+            - "suffix.example.com"
+      import_mode: if-empty
+  - tag: rule_store_ad
+    type: sqlite_rule_set
+    args:
+      path: "{}"
+      categories:
+        - ad
+  - tag: match_rules
+    type: qname
+    args:
+      - "$rule_store"
+  - tag: match_rules_ad
+    type: qname
+    args:
+      - "$rule_store_ad"
+"#,
+        yaml_path(&database),
+        yaml_path(&rules_file),
+        yaml_path(&database)
+    );
+
+    let config = parse_config(&yaml)?;
+    let registry = plugin::init(config).await?;
+    let provider = registry
+        .get_plugin("rule_store")
+        .expect("rule_store provider should exist")
+        .to_provider();
+    let ad_provider = registry
+        .get_plugin("rule_store_ad")
+        .expect("rule_store_ad provider should exist")
+        .to_provider();
+
+    assert!(provider.contains_name(&Name::from_ascii("www.suffix.example.com.")?));
+    assert!(provider.contains_name(&Name::from_ascii("cdn-tracker.net.")?));
+    assert!(provider.contains_ip(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7))));
+    assert!(!provider.contains_name(&Name::from_ascii("other.example.")?));
+
+    assert!(ad_provider.contains_name(&Name::from_ascii("cdn-tracker.net.")?));
+    assert!(ad_provider.contains_ip(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7))));
+    assert!(
+        !ad_provider.contains_name(&Name::from_ascii("www.suffix.example.com.")?),
+        "category-filtered provider must ignore other categories"
+    );
+
+    let store = oxidns::rule_store::open_path(&database.display().to_string())?;
+    store.add_rules(
+        vec![oxidns::rule_store::NewRule {
+            rule: "runtime.example".to_string(),
+            kind: None,
+            category: None,
+            enabled: None,
+        }],
+        "api",
+        true,
+        "default",
+    )?;
+    assert!(
+        provider.contains_name(&Name::from_ascii("runtime.example.")?),
+        "provider must observe API writes immediately"
+    );
+
+    registry.destroy().await;
+    Ok(())
+}
+
 #[cfg(feature = "plugin-dynamic-domain")]
 #[tokio::test]
 async fn test_learn_domain_rejects_non_dynamic_domain_set_provider() -> Result<()> {

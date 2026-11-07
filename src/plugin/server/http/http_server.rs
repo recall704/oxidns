@@ -389,10 +389,13 @@ mod tests {
     }
 
     fn make_request_handle(observed: Arc<Mutex<Option<ObservedRequest>>>) -> Arc<RequestHandle> {
-        Arc::new(RequestHandle {
-            entry_executor: Arc::new(CaptureAndRespondExecutor { observed }),
-            metrics: None,
-        })
+        Arc::new(RequestHandle::new(
+            Arc::new(CaptureAndRespondExecutor { observed }),
+            "http_test",
+            "doh",
+            None,
+            None,
+        ))
     }
 
     fn make_dns_query(id: u16) -> Message {

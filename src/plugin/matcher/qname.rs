@@ -114,6 +114,13 @@ impl Matcher for QnameMatcher {
                     .any(|set| set.contains_name(q.name()))
         })
     }
+
+    fn evidence(&self, context: &DnsContext) -> Option<String> {
+        context
+            .request()
+            .first_question()
+            .map(|question| question.name().to_fqdn())
+    }
 }
 
 #[cfg(test)]

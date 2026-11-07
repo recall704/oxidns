@@ -309,6 +309,14 @@ export interface QueryRecordPayload {
   payload: unknown;
 }
 
+export interface QueryRecorderStepDetail {
+  observed?: string | null;
+  target?: string | null;
+  source?: string | null;
+  note?: string | null;
+  elapsed_ms?: number | null;
+}
+
 export interface QueryRecorderStep {
   event_index: number;
   sequence_tag: string;
@@ -316,6 +324,9 @@ export interface QueryRecorderStep {
   kind: string;
   tag?: string;
   outcome: string;
+  depth?: number;
+  at_us?: number;
+  detail?: QueryRecorderStepDetail | null;
 }
 
 export interface QueryRecordRow {
@@ -335,6 +346,14 @@ export interface QueryRecordRow {
   authorities_json: QueryRecordPayload[];
   additionals_json: QueryRecordPayload[];
   signature_json: QueryRecordPayload[];
+  server_tag?: string | null;
+  protocol?: string | null;
+  listen?: string | null;
+  entry_tag?: string | null;
+  responder_tag?: string | null;
+  responder_kind?: string | null;
+  responder_upstream?: string | null;
+  responder_elapsed_ms?: number | null;
   [key: string]: unknown;
 }
 
@@ -1153,6 +1172,163 @@ export async function fetchUpgradeStatus(): Promise<UpgradeStatusResponse> {
     headers: apiHeaders(),
   });
   return readJsonResponse<UpgradeStatusResponse>(response);
+}
+
+export type RuleKind = "domain" | "ip";
+
+export interface RuleRecord {
+  id: number;
+  kind: RuleKind;
+  rule: string;
+  category: string;
+  source: string;
+  enabled: boolean;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface RuleCategoryCount {
+  category: string;
+  total: number;
+  domain: number;
+  ip: number;
+  enabled: number;
+}
+
+export interface RuleStats {
+  total: number;
+  domain: number;
+  ip: number;
+  enabled: number;
+  disabled: number;
+}
+
+export interface RuleListResponse {
+  ok: boolean;
+  database: string;
+  total: number;
+  next_cursor: number | null;
+  stats: RuleStats;
+  categories: RuleCategoryCount[];
+  rules: RuleRecord[];
+}
+
+export interface RuleAddResponse {
+  ok: boolean;
+  added: number;
+  skipped: number;
+  total: number;
+  stats: RuleStats;
+  categories: RuleCategoryCount[];
+}
+
+export interface RuleUpdateResponse {
+  ok: boolean;
+  rule: RuleRecord;
+  total: number;
+  stats: RuleStats;
+  categories: RuleCategoryCount[];
+}
+
+export interface RuleDeleteResponse {
+  ok: boolean;
+  removed: number;
+  total: number;
+  stats: RuleStats;
+  categories: RuleCategoryCount[];
+}
+
+export interface RuleInput {
+  rule: string;
+  kind?: RuleKind | null;
+  category?: string | null;
+  enabled?: boolean;
+}
+
+export interface RuleListOptions {
+  cursor?: number | null;
+  limit?: number;
+  q?: string;
+  kind?: RuleKind | "all";
+  category?: string | "all";
+  enabled?: "all" | "true" | "false";
+  signal?: AbortSignal;
+}
+
+/** The backend has no rule database configured, so `/api/rules` is absent. */
+export class RuleDbUnavailableError extends Error {}
+
+export async function fetchRuleDbRules(
+  options: RuleListOptions = {},
+): Promise<RuleListResponse> {
+  const params = new URLSearchParams();
+  if (options.cursor) params.set("cursor", String(options.cursor));
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.q) params.set("q", options.q);
+  if (options.kind && options.kind !== "all") params.set("kind", options.kind);
+  if (options.category && options.category !== "all") {
+    params.set("category", options.category);
+  }
+  if (options.enabled && options.enabled !== "all") {
+    params.set("enabled", options.enabled);
+  }
+  const query = params.toString();
+  const response = await fetch(apiUrl(`/rules${query ? `?${query}` : ""}`), {
+    method: "GET",
+    headers: apiHeaders(),
+    signal: options.signal,
+  });
+  if (response.status === 404) {
+    throw new RuleDbUnavailableError("rule_db is not configured");
+  }
+  return readJsonResponse<RuleListResponse>(response);
+}
+
+export async function addRuleDbRules(
+  rules: RuleInput[],
+  source = "api",
+  category?: string,
+): Promise<RuleAddResponse> {
+  const response = await fetch(apiUrl("/rules"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ rules, source, category }),
+  });
+  return readJsonResponse<RuleAddResponse>(response);
+}
+
+export async function updateRuleDbRule(input: {
+  id: number;
+  rule?: string;
+  kind?: RuleKind | null;
+  category?: string | null;
+  enabled?: boolean;
+}): Promise<RuleUpdateResponse> {
+  const response = await fetch(apiUrl("/rules"), {
+    method: "PUT",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return readJsonResponse<RuleUpdateResponse>(response);
+}
+
+export async function deleteRuleDbRules(
+  ids: number[],
+): Promise<RuleDeleteResponse> {
+  const response = await fetch(apiUrl("/rules"), {
+    method: "DELETE",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  return readJsonResponse<RuleDeleteResponse>(response);
+}
+
+export async function clearRuleDbRules(): Promise<RuleDeleteResponse> {
+  const response = await fetch(apiUrl("/rules/clear"), {
+    method: "POST",
+    headers: apiHeaders(),
+  });
+  return readJsonResponse<RuleDeleteResponse>(response);
 }
 
 export function apiUrl(path: string) {

@@ -17,9 +17,20 @@ pub use factory::ForwardFactory;
 pub use selection::ResponseSelectionMode;
 
 use crate::infra::error::DnsError;
+use crate::infra::network::upstream::{ConnectionInfo, ConnectionType};
 
 fn is_timeout_error(err: &DnsError) -> bool {
     err.to_string().to_ascii_lowercase().contains("timeout")
+}
+
+pub(super) fn upstream_protocol(info: &ConnectionInfo) -> &'static str {
+    match info.connection_type {
+        ConnectionType::UDP => "udp",
+        ConnectionType::TCP => "tcp",
+        ConnectionType::DoT => "dot",
+        ConnectionType::DoQ => "doq",
+        ConnectionType::DoH => "doh",
+    }
 }
 
 #[cfg(test)]

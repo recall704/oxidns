@@ -3,6 +3,7 @@
 
 use super::tests::sample_record_row;
 use super::*;
+use crate::plugin::executor::query_recorder::model::{StepAnnotation, StepDetailJson};
 
 fn step(index: usize, tag: &str) -> StepJson {
     StepJson {
@@ -12,6 +13,9 @@ fn step(index: usize, tag: &str) -> StepJson {
         kind: "matcher".into(),
         tag: Some(tag.into()),
         outcome: "matched".into(),
+        depth: 0,
+        at_us: 0,
+        detail: None,
     }
 }
 
@@ -285,8 +289,8 @@ fn full_response_snapshot_roundtrips_all_sections_and_opaque_payloads() {
         serde_json::json!({"bytes":[0,255,128]});
     let compressed = super::super::payload::EncodedPayload::encode(&record).unwrap();
     assert_eq!(compressed.codec, 1);
-    let raw =
-        super::super::payload::EncodedPayload::encode_with_compression(&record, false).unwrap();
+    let raw = super::super::payload::EncodedPayload::encode_with_compression(&record, &[], false)
+        .unwrap();
     assert_eq!(compressed.decode().unwrap(), raw.decode().unwrap());
     let mut conn = Connection::open_in_memory().unwrap();
     let t = table_names("response");
@@ -323,7 +327,19 @@ fn write_v1(conn: &mut Connection, details: &[(RecordRow, Vec<StepJson>)]) {
             let serde_json::Value::Object(mut fields) = serde_json::to_value(r).unwrap() else {
                 unreachable!()
             };
-            fields.remove("id");
+            for key in [
+                "id",
+                "server_tag",
+                "protocol",
+                "listen",
+                "entry_tag",
+                "responder_tag",
+                "responder_kind",
+                "responder_upstream",
+                "responder_elapsed_ms",
+            ] {
+                fields.remove(key);
+            }
             let (columns, values): (Vec<_>, Vec<_>) = fields
                 .into_iter()
                 .map(|(k, v)| {
@@ -629,4 +645,143 @@ fn schema_initialization_failure_is_atomic() {
         )
         .unwrap();
     assert_eq!(tables, 0);
+}
+
+#[test]
+fn step_annotations_roundtrip_and_merge_into_shared_steps() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    let t = table_names("annotations");
+    create_schema(&mut conn, &t).unwrap();
+
+    let mut steps = vec![step(0, "a"), step(1, "b")];
+    steps[0].depth = 2;
+    steps[0].at_us = 120;
+    steps[0].detail = Some(StepDetailJson {
+        observed: Some("api.example.com.".to_string()),
+        ..Default::default()
+    });
+    steps[1].depth = 3;
+    steps[1].at_us = 900;
+    steps[1].detail = Some(StepDetailJson {
+        source: Some("223.5.5.5:53".to_string()),
+        elapsed_ms: Some(18),
+        ..Default::default()
+    });
+
+    let prepared = PreparedRecord::new(sample_record_row(), steps.clone()).unwrap();
+    let annotations = prepared.payload.decode().unwrap().step_annotations;
+    assert_eq!(
+        annotations,
+        steps
+            .iter()
+            .map(StepAnnotation::from_step)
+            .collect::<Vec<_>>()
+    );
+
+    let tx = conn.transaction().unwrap();
+    let detail = insert_record(&tx, &t, sample_record_row(), steps.clone()).unwrap();
+    tx.commit().unwrap();
+
+    let trace_id: i64 = conn
+        .query_row(
+            &format!("SELECT trace_id FROM {} WHERE id=?1", t.records),
+            rusqlite::params![detail.record.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let shared = load_steps(&conn, &t, trace_id).unwrap();
+    assert!(
+        shared
+            .iter()
+            .all(|step| step.depth == 0 && step.at_us == 0 && step.detail.is_none())
+    );
+    assert_eq!(merge_steps(shared, annotations), steps);
+}
+
+#[test]
+fn annotated_steps_share_the_structural_trace() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    let t = table_names("annotated_shared");
+    create_schema(&mut conn, &t).unwrap();
+
+    let mut first = vec![step(0, "a")];
+    first[0].depth = 2;
+    first[0].at_us = 10;
+    first[0].detail = Some(StepDetailJson {
+        observed: Some("first.example.".to_string()),
+        ..Default::default()
+    });
+    let mut second = vec![step(0, "a")];
+    second[0].depth = 3;
+    second[0].at_us = 99;
+    second[0].detail = Some(StepDetailJson {
+        observed: Some("second.example.".to_string()),
+        ..Default::default()
+    });
+
+    let tx = conn.transaction().unwrap();
+    insert_record(&tx, &t, sample_record_row(), first).unwrap();
+    insert_record(&tx, &t, sample_record_row(), second).unwrap();
+    tx.commit().unwrap();
+
+    assert_eq!(count(&conn, &t.traces), 1);
+    assert_eq!(count(&conn, &t.trace_steps), 1);
+    assert_eq!(count(&conn, &t.records), 2);
+}
+
+#[test]
+fn schema_revision_one_migrates_ingress_and_responder_columns() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    let t = table_names("migrate");
+    create_schema(&mut conn, &t).unwrap();
+
+    let tx = conn.transaction().unwrap();
+    insert_record(&tx, &t, sample_record_row(), vec![]).unwrap();
+    tx.commit().unwrap();
+
+    for column in [
+        "server_tag",
+        "protocol",
+        "listen",
+        "entry_tag",
+        "responder_tag",
+        "responder_kind",
+        "responder_upstream",
+        "responder_elapsed_ms",
+    ] {
+        conn.execute(
+            &format!("ALTER TABLE {} DROP COLUMN {column}", t.records),
+            [],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        &format!(
+            "UPDATE {} SET value='1' WHERE key='schema_revision'",
+            t.meta
+        ),
+        [],
+    )
+    .unwrap();
+
+    create_schema(&mut conn, &t).unwrap();
+
+    let revision: String = conn
+        .query_row(
+            &format!("SELECT value FROM {} WHERE key='schema_revision'", t.meta),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(revision, "2");
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name=?1",
+            [&t.records],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(sql.contains("server_tag"));
+    assert!(sql.contains("responder_upstream"));
+    assert_eq!(count(&conn, &t.records), 1);
 }

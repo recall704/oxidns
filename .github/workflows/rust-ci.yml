@@ -37,6 +37,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # CI builds always start from cold caches; incremental artifacts would only
+  # bloat cache payloads without being reused.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   lint:

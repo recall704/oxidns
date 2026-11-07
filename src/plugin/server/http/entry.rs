@@ -586,10 +586,7 @@ mod tests {
             answer,
         });
         (
-            Arc::new(RequestHandle {
-                entry_executor: executor,
-                metrics: None,
-            }),
+            Arc::new(RequestHandle::new(executor, "http_test", "doh", None, None)),
             observed,
         )
     }

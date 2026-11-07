@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use rusqlite::{CachedStatement, Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 
-use super::model::{PendingRecord, QuestionJson, RecordDetail, RecordRow, StepJson, TableNames};
+use super::model::{
+    PendingRecord, QuestionJson, RecordDetail, RecordRow, StepAnnotation, StepJson, TableNames,
+};
 use super::payload::EncodedPayload;
 use crate::infra::error::{DnsError, Result};
 
@@ -37,6 +39,14 @@ pub(super) struct StoredRecord {
     pub(super) trace_id: i64,
     pub(super) question_set_id: i64,
     pub(super) payload: EncodedPayload,
+    pub(super) server_tag: Option<String>,
+    pub(super) protocol: Option<String>,
+    pub(super) listen: Option<String>,
+    pub(super) entry_tag: Option<String>,
+    pub(super) responder_tag: Option<String>,
+    pub(super) responder_kind: Option<String>,
+    pub(super) responder_upstream: Option<String>,
+    pub(super) responder_elapsed_ms: Option<u64>,
 }
 pub(super) const RECORD_COLUMNS: &[&str] = &[
     "id",
@@ -65,6 +75,14 @@ pub(super) const RECORD_COLUMNS: &[&str] = &[
     "payload_codec",
     "payload_raw_len",
     "payload",
+    "server_tag",
+    "protocol",
+    "listen",
+    "entry_tag",
+    "responder_tag",
+    "responder_kind",
+    "responder_upstream",
+    "responder_elapsed_ms",
 ];
 
 impl StoredRecord {
@@ -98,6 +116,14 @@ impl StoredRecord {
                 raw_len: row.get(24)?,
                 data: row.get(25)?,
             },
+            server_tag: row.get(26)?,
+            protocol: row.get(27)?,
+            listen: row.get(28)?,
+            entry_tag: row.get(29)?,
+            responder_tag: row.get(30)?,
+            responder_kind: row.get(31)?,
+            responder_upstream: row.get(32)?,
+            responder_elapsed_ms: row.get::<_, Option<i64>>(33)?.map(|value| value as u64),
         })
     }
 
@@ -131,8 +157,56 @@ impl StoredRecord {
             additionals_json: snapshot.additionals_json,
             signature_json: snapshot.signature_json,
             resp_edns_json: snapshot.resp_edns_json,
+            server_tag: self.server_tag,
+            protocol: self.protocol,
+            listen: self.listen,
+            entry_tag: self.entry_tag,
+            responder_tag: self.responder_tag,
+            responder_kind: self.responder_kind,
+            responder_upstream: self.responder_upstream,
+            responder_elapsed_ms: self.responder_elapsed_ms,
         })
     }
+
+    /// Per-record step annotations stored in the compressed payload.
+    pub(super) fn step_annotations(&self) -> Result<Vec<StepAnnotation>> {
+        Ok(self.payload.decode()?.step_annotations)
+    }
+}
+
+/// Strip per-record annotations so shared trace identity stays structural.
+pub(super) fn structural_steps(steps: &[StepJson]) -> Vec<StepJson> {
+    steps
+        .iter()
+        .map(|step| StepJson {
+            depth: 0,
+            at_us: 0,
+            detail: None,
+            ..step.clone()
+        })
+        .collect()
+}
+
+/// Merge per-record annotations into the shared structural steps.
+pub(super) fn merge_steps(steps: Vec<StepJson>, annotations: Vec<StepAnnotation>) -> Vec<StepJson> {
+    if annotations.is_empty() {
+        return steps;
+    }
+    let mut by_index: HashMap<usize, StepAnnotation> = annotations
+        .into_iter()
+        .map(|annotation| (annotation.event_index, annotation))
+        .collect();
+    steps
+        .into_iter()
+        .map(|mut step| {
+            if let Some(annotation) = by_index.remove(&step.event_index) {
+                step.depth = annotation.depth;
+                step.at_us = annotation.at_us;
+                step.detail = annotation.detail;
+            }
+            step
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -141,6 +215,9 @@ pub(super) struct PreparedRecord {
     pub(super) questions_json: String,
     pub(super) question_fingerprint: [u8; 32],
     pub(super) trace_fingerprint: [u8; 32],
+    /// Structural steps shared by records with the same path. Per-record
+    /// annotations are excluded so deduplication still applies.
+    pub(super) trace_steps: Vec<StepJson>,
     pub(super) payload: EncodedPayload,
 }
 
@@ -162,7 +239,8 @@ impl PreparedRecord {
             .collect();
         let question_fingerprint = Sha256::digest(serde_json::to_vec(&question_identity)?).into();
         // Explicit identity fields: future request-specific timings and values
-        // must not silently become part of the shared path identity.
+        // must not silently become part of the shared path identity. Depth,
+        // evidence, and timing live in the per-record payload instead.
         let identity: Vec<_> = steps
             .iter()
             .map(|s| {
@@ -177,12 +255,15 @@ impl PreparedRecord {
             })
             .collect();
         let trace_fingerprint = Sha256::digest(serde_json::to_vec(&identity)?).into();
-        let payload = EncodedPayload::encode_with_compression(&record, compress)?;
+        let trace_steps = structural_steps(&steps);
+        let annotations: Vec<_> = steps.iter().map(StepAnnotation::from_step).collect();
+        let payload = EncodedPayload::encode_with_compression(&record, &annotations, compress)?;
         Ok(Self {
             detail: RecordDetail { record, steps },
             questions_json,
             question_fingerprint,
             trace_fingerprint,
+            trace_steps,
             payload,
         })
     }
@@ -217,7 +298,7 @@ struct Inserts<'a> {
 impl<'a> Inserts<'a> {
     fn new(conn: &'a Connection, t: &TableNames) -> Result<Self> {
         Ok(Self {
-            record: conn.prepare_cached(&format!("INSERT INTO {} (created_at_ms, elapsed_ms, request_id, client_ip, req_rd, req_cd, req_ad, req_opcode, error, has_response, rcode, resp_aa, resp_tc, resp_ra, resp_ad, resp_cd, answer_count, authority_count, additional_count, trace_id, question_set_id, payload_version, payload_codec, payload_raw_len, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", t.records))?,
+            record: conn.prepare_cached(&format!("INSERT INTO {} (created_at_ms, elapsed_ms, request_id, client_ip, req_rd, req_cd, req_ad, req_opcode, error, has_response, rcode, resp_aa, resp_tc, resp_ra, resp_ad, resp_cd, answer_count, authority_count, additional_count, trace_id, question_set_id, payload_version, payload_codec, payload_raw_len, payload, server_tag, protocol, listen, entry_tag, responder_tag, responder_kind, responder_upstream, responder_elapsed_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", t.records))?,
             trace: conn.prepare_cached(&format!("INSERT INTO {} (fingerprint) VALUES (?1)", t.traces))?,
             step: conn.prepare_cached(&format!("INSERT INTO {} (trace_id,event_index,sequence_tag,node_index,kind,tag,outcome) VALUES (?,?,?,?,?,?,?)", t.trace_steps))?,
             question_set: conn.prepare_cached(&format!("INSERT INTO {} (fingerprint,questions_json) VALUES (?,?)", t.question_sets))?,
@@ -240,7 +321,7 @@ pub(super) fn insert_batch(
         let trace_id = match cache.traces.get(&p.trace_fingerprint).and_then(|items| {
             items
                 .iter()
-                .find(|(steps, _)| *steps == p.detail.steps.as_slice())
+                .find(|(steps, _)| *steps == p.trace_steps.as_slice())
         }) {
             Some((_, id)) => *id,
             None => {
@@ -248,7 +329,7 @@ pub(super) fn insert_batch(
                 let mut found = None;
                 while let Some(row) = candidates.next()? {
                     let id = row.get(0)?;
-                    if load_steps(tx, tables, id)? == p.detail.steps {
+                    if load_steps(tx, tables, id)? == p.trace_steps {
                         found = Some(id);
                         break;
                     }
@@ -259,7 +340,7 @@ pub(super) fn insert_batch(
                 } else {
                     sql.trace.execute([p.trace_fingerprint.as_slice()])?;
                     let id = tx.last_insert_rowid();
-                    for s in &p.detail.steps {
+                    for s in &p.trace_steps {
                         sql.step.execute(params![
                             id,
                             s.event_index as i64,
@@ -276,7 +357,7 @@ pub(super) fn insert_batch(
                     .traces
                     .entry(p.trace_fingerprint)
                     .or_default()
-                    .push((&p.detail.steps, id));
+                    .push((&p.trace_steps, id));
                 id
             }
         };
@@ -350,6 +431,14 @@ pub(super) fn insert_batch(
             p.payload.codec,
             p.payload.raw_len,
             p.payload.data,
+            r.server_tag,
+            r.protocol,
+            r.listen,
+            r.entry_tag,
+            r.responder_tag,
+            r.responder_kind,
+            r.responder_upstream,
+            r.responder_elapsed_ms.map(|value| value as i64),
         ])?;
         ids.push(tx.last_insert_rowid());
     }
@@ -384,6 +473,9 @@ pub(super) fn load_steps(
             kind: r.get(3)?,
             tag: r.get(4)?,
             outcome: r.get(5)?,
+            depth: 0,
+            at_us: 0,
+            detail: None,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()

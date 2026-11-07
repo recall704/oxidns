@@ -40,6 +40,8 @@ pub mod config;
 pub mod core;
 pub mod infra;
 pub mod plugin;
+#[cfg(feature = "provider-sqlite-rule")]
+pub mod rule_store;
 
 pub use oxidns_macros::plugin_factory;
 pub use oxidns_proto as proto;

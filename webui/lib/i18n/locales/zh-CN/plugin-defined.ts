@@ -2514,6 +2514,40 @@ export const zhCNPluginDefined = {
         },
       },
     },
+    sqlite_rule_set: {
+      name: "SQLite Rule Set",
+      description: "SQLite 持久化规则库，支持 API 与 WebUI 动态增删改",
+      fields: {
+        path: {
+          label: "数据库文件",
+          description: "SQLite 数据库路径；留空时复用顶层 rule_db 的数据库。",
+          example: "./data/rules.db",
+        },
+        categories: {
+          label: "规则分类",
+          description: "仅加载指定分类的规则；留空表示加载所有分类。",
+          example: "ad\ngfw\nchina\ncdn",
+        },
+        "categories[]": {
+          label: "输入值",
+          example: "ad",
+        },
+        import: {
+          label: "启动导入规则",
+          description: "数据库为空时导入的规则，支持内联规则与 &文件 源。",
+          example: "&./rules.txt\nsuffix.example.com",
+        },
+        "import[]": {
+          label: "输入值",
+          example: "suffix.example.com",
+        },
+        import_mode: {
+          label: "导入模式",
+          description: "已有数据时的导入行为：if-empty、merge 或 replace。",
+          example: "if-empty",
+        },
+      },
+    },
     geosite: {
       name: "Geosite",
       description: "从 geosite.dat 提取域名规则集合",

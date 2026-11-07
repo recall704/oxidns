@@ -421,10 +421,13 @@ impl PluginFactory for HttpServerFactory {
             let executor = init_context.executor(&field, &entry.exec)?;
 
             // Create request handle that wraps the executor
-            let request_handle = Arc::new(RequestHandle {
-                entry_executor: executor,
-                metrics: Some(metrics.clone()),
-            });
+            let request_handle = Arc::new(RequestHandle::new(
+                executor,
+                plugin_config.tag.clone(),
+                "doh",
+                Some(listen),
+                Some(metrics.clone()),
+            ));
 
             // Register the HTTP DNS entry for this path.
             info!(

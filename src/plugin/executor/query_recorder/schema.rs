@@ -44,10 +44,14 @@ pub(super) fn create_schema(conn: &mut Connection, tables: &TableNames) -> Resul
                 |row| row.get(0),
             )
             .optional()?;
-        if revision.as_deref() != Some("1") {
-            return Err(DnsError::plugin(format!(
-                "query_recorder unsupported schema revision: {revision:?}"
-            )));
+        match revision.as_deref() {
+            Some("2") => {}
+            Some("1") => migrate_v1_to_v2(&tx, tables)?,
+            other => {
+                return Err(DnsError::plugin(format!(
+                    "query_recorder unsupported schema revision: {other:?}"
+                )));
+            }
         }
         tx.commit()?;
         return Ok(());
@@ -79,7 +83,15 @@ pub(super) fn create_schema(conn: &mut Connection, tables: &TableNames) -> Resul
             payload_version INTEGER NOT NULL,
             payload_codec INTEGER NOT NULL,
             payload_raw_len INTEGER NOT NULL,
-            payload BLOB NOT NULL
+            payload BLOB NOT NULL,
+            server_tag TEXT NULL,
+            protocol TEXT NULL,
+            listen TEXT NULL,
+            entry_tag TEXT NULL,
+            responder_tag TEXT NULL,
+            responder_kind TEXT NULL,
+            responder_upstream TEXT NULL,
+            responder_elapsed_ms INTEGER NULL
         );
         CREATE TABLE {traces} (id INTEGER PRIMARY KEY, fingerprint BLOB NOT NULL);
         CREATE INDEX {traces}_fingerprint_idx ON {traces}(fingerprint);
@@ -109,10 +121,29 @@ pub(super) fn create_schema(conn: &mut Connection, tables: &TableNames) -> Resul
         CREATE INDEX {records}_question_set_idx ON {records}(question_set_id);
         CREATE INDEX {records}_rcode_idx ON {records}(rcode COLLATE NOCASE);
         CREATE TABLE {meta} (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        INSERT INTO {meta} VALUES ('schema_revision', '1');",
+        INSERT INTO {meta} VALUES ('schema_revision', '2');",
         records = tables.records, traces = tables.traces, trace_steps = tables.trace_steps,
         question_sets = tables.question_sets, question_items = tables.question_items, meta = tables.meta,
     ))?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Revision 2 adds per-record ingress and responder attribution. Step
+/// annotations live in the compressed payload, so `trace_steps` is unchanged.
+fn migrate_v1_to_v2(tx: &rusqlite::Transaction<'_>, tables: &TableNames) -> Result<()> {
+    tx.execute_batch(&format!(
+        "ALTER TABLE {records} ADD COLUMN server_tag TEXT NULL;
+         ALTER TABLE {records} ADD COLUMN protocol TEXT NULL;
+         ALTER TABLE {records} ADD COLUMN listen TEXT NULL;
+         ALTER TABLE {records} ADD COLUMN entry_tag TEXT NULL;
+         ALTER TABLE {records} ADD COLUMN responder_tag TEXT NULL;
+         ALTER TABLE {records} ADD COLUMN responder_kind TEXT NULL;
+         ALTER TABLE {records} ADD COLUMN responder_upstream TEXT NULL;
+         ALTER TABLE {records} ADD COLUMN responder_elapsed_ms INTEGER NULL;
+         UPDATE {meta} SET value = '2' WHERE key = 'schema_revision';",
+        records = tables.records,
+        meta = tables.meta,
+    ))?;
     Ok(())
 }

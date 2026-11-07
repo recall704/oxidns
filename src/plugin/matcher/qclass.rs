@@ -83,6 +83,13 @@ impl Matcher for QclassMatcher {
             .iter()
             .any(|q| self.qclasses.contains(&u16::from(q.qclass())))
     }
+
+    fn evidence(&self, context: &DnsContext) -> Option<String> {
+        context
+            .request()
+            .first_question()
+            .map(|question| question.qclass().to_string())
+    }
 }
 
 #[cfg(test)]

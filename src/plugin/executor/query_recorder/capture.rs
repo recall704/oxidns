@@ -9,9 +9,10 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use super::model::{
-    EdnsJson, EdnsOptionJson, PendingRecord, QuestionJson, RecordJson, RecordRow, StepJson,
+    EdnsJson, EdnsOptionJson, PendingRecord, QuestionJson, RecordJson, RecordRow, StepDetailJson,
+    StepJson,
 };
-use crate::core::context::{ExecutionPath, ExecutionPathEvent};
+use crate::core::context::{ExecutionPath, ExecutionPathEvent, TraceDetail};
 use crate::plugin::executor::rdata_json::{RDataPayloadMode, rdata_payload};
 use crate::proto::rdata::{ClientSubnet, Edns, EdnsCode, EdnsExtendedDnsError, EdnsOption};
 use crate::proto::{DNSClass, Message, Opcode, Question, Rcode, Record, RecordType};
@@ -26,6 +27,11 @@ impl PendingRecord {
         exec_path: ExecutionPath,
         step_start_index: usize,
         client_ip: SocketAddr,
+        server_tag: Option<String>,
+        protocol: Option<String>,
+        listen: Option<String>,
+        entry_tag: Option<String>,
+        responder: Option<super::model::ResponderJson>,
         error: Option<String>,
     ) -> Self {
         Self {
@@ -36,6 +42,11 @@ impl PendingRecord {
             exec_path,
             step_start_index,
             client_ip,
+            server_tag,
+            protocol,
+            listen,
+            entry_tag,
+            responder,
             error,
         }
     }
@@ -49,6 +60,11 @@ impl PendingRecord {
             exec_path,
             step_start_index,
             client_ip,
+            server_tag,
+            protocol,
+            listen,
+            entry_tag,
+            responder,
             error,
         } = self;
 
@@ -95,6 +111,14 @@ impl PendingRecord {
             additionals_json: Vec::new(),
             signature_json: Vec::new(),
             resp_edns_json: None,
+            server_tag,
+            protocol,
+            listen,
+            entry_tag,
+            responder_tag: responder.as_ref().map(|value| value.tag.clone()),
+            responder_kind: responder.as_ref().map(|value| value.kind.clone()),
+            responder_upstream: responder.as_ref().and_then(|value| value.upstream.clone()),
+            responder_elapsed_ms: responder.and_then(|value| value.elapsed_ms),
         };
 
         if no_err && let Some(response) = response {
@@ -151,6 +175,19 @@ fn step_json((event_index, event): (usize, &Arc<ExecutionPathEvent>)) -> StepJso
         kind: event.kind.clone(),
         tag: event.tag.clone(),
         outcome: event.outcome.clone(),
+        depth: event.depth,
+        at_us: event.at_us,
+        detail: event.detail.as_deref().map(step_detail_json),
+    }
+}
+
+fn step_detail_json(detail: &TraceDetail) -> StepDetailJson {
+    StepDetailJson {
+        observed: detail.observed.as_deref().map(str::to_string),
+        target: detail.target.as_deref().map(str::to_string),
+        source: detail.source.as_deref().map(str::to_string),
+        note: detail.note.as_deref().map(str::to_string),
+        elapsed_ms: detail.elapsed_ms,
     }
 }
 

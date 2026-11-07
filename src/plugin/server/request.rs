@@ -18,9 +18,34 @@ use crate::proto::{Edns, Message, Rcode};
 #[derive(Debug)]
 pub struct RequestHandle {
     pub entry_executor: Arc<dyn Executor>,
+    /// Fixed identity of the server plugin that owns this handle.
+    pub server_tag: Arc<str>,
+    pub protocol: Arc<str>,
+    pub listen: Option<SocketAddr>,
+    entry_tag: Arc<str>,
     /// Shared server metrics. `None` for internal/test handles that should not
     /// emit server-level metrics.
     pub(crate) metrics: Option<Arc<ServerMetrics>>,
+}
+
+impl RequestHandle {
+    pub(crate) fn new(
+        entry_executor: Arc<dyn Executor>,
+        server_tag: impl Into<Arc<str>>,
+        protocol: impl Into<Arc<str>>,
+        listen: Option<SocketAddr>,
+        metrics: Option<Arc<ServerMetrics>>,
+    ) -> Self {
+        let entry_tag = Arc::from(entry_executor.tag());
+        Self {
+            entry_executor,
+            server_tag: server_tag.into(),
+            protocol: protocol.into(),
+            listen,
+            entry_tag,
+            metrics,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -49,6 +74,12 @@ impl RequestHandle {
         let metrics_start = self.metrics.as_ref().map(|m| m.on_request_start());
 
         let mut context = DnsContext::new(normalize_ipv4_mapped_socket_addr(src_addr), msg);
+        context.set_server_identity(
+            self.server_tag.clone(),
+            self.protocol.clone(),
+            self.listen,
+            self.entry_tag.clone(),
+        );
         self.apply_request_meta(&mut context, meta);
 
         if event_enabled!(Level::DEBUG) {
@@ -175,10 +206,7 @@ mod tests {
     }
 
     fn make_request_handle(executor: Arc<dyn Executor>) -> RequestHandle {
-        RequestHandle {
-            entry_executor: executor,
-            metrics: None,
-        }
+        RequestHandle::new(executor, "test", "udp", None, None)
     }
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]

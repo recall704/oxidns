@@ -22,9 +22,11 @@ import {
 } from "@/components/ui/tooltip";
 import { useAuthStore } from "@/lib/auth-store";
 import {
+  Activity,
   BookOpen,
   GitBranch,
   LayoutDashboard,
+  ListChecks,
   LogOut,
   Puzzle,
   ScrollText,
@@ -44,6 +46,16 @@ const navItems = [
     titleKey: WEBUI.shell.plugins,
     href: "/plugins",
     icon: Puzzle,
+  },
+  {
+    titleKey: WEBUI.shell.rules,
+    href: "/rules",
+    icon: ListChecks,
+  },
+  {
+    titleKey: WEBUI.shell.queries,
+    href: "/queries",
+    icon: Activity,
   },
   {
     titleKey: WEBUI.shell.logs,

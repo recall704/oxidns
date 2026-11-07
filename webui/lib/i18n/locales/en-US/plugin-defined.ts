@@ -2735,6 +2735,45 @@ export const enUSPluginDefined = {
         },
       },
     },
+    sqlite_rule_set: {
+      name: "SQLite Rule Set",
+      description:
+        "SQLite-backed persistent rule set with runtime API and WebUI management",
+      fields: {
+        path: {
+          label: "Database file",
+          description:
+            "SQLite database path. Leave empty to reuse the top-level rule_db database.",
+          example: "./data/rules.db",
+        },
+        categories: {
+          label: "Rule categories",
+          description:
+            "Only load rules from these categories; leave empty to load every category.",
+          example: "ad\ngfw\nchina\ncdn",
+        },
+        "categories[]": {
+          label: "Entry value",
+          example: "ad",
+        },
+        import: {
+          label: "Startup import rules",
+          description:
+            "Rules imported when the database is empty; supports inline rules and &file sources.",
+          example: "&./rules.txt\nsuffix.example.com",
+        },
+        "import[]": {
+          label: "Entry value",
+          example: "suffix.example.com",
+        },
+        import_mode: {
+          label: "Import mode",
+          description:
+            "Import behavior when data already exists: if-empty, merge, or replace.",
+          example: "if-empty",
+        },
+      },
+    },
     geosite: {
       name: "Geosite",
       description: "Extract domain name rule set from geosite.dat",

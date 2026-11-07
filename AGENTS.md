@@ -24,6 +24,7 @@
 - `src/infra/` contains subsystem-neutral infrastructure shared by CLI, API, app, and plugins: errors, clocks, environment helpers, line-oriented I/O, service management, task orchestration, TTL cache primitives, observability/logging/metrics, upgrade support, and networking.
 - Keep the dependency direction one-way: `plugin` may use `infra`, but `infra` must not depend on plugin traits, registries, or plugin-specific models. Shared code belongs in `infra` only when its API and semantics are useful outside the plugin system.
 - `src/config/` defines the YAML schema and validation for runtime configuration.
+- `src/rule_store/` owns the optional SQLite rule database: category-scoped startup import, compiled matching snapshots, CRUD persistence, and the global `/rules` management API consumed by the WebUI rule page. `sqlite_rule_set` providers can share the same store by database path and optionally filter by category.
 - `src/infra/network/` contains listeners, protocol transports, TLS setup, upstream resolution, bootstrap logic, pooling, and networking helpers.
 - `src/infra/io/` contains reusable file and stream helpers, including line-oriented rule loading shared by providers.
 - `src/infra/upgrade/` separates release discovery, download, archive handling, progress reporting, and binary/WebUI installation while exposing upgrade orchestration through `mod.rs`.
@@ -36,6 +37,7 @@
 - `config*.yaml` files are the canonical runnable configuration profiles for their corresponding bundles.
 - `README.md` and `README_EN.md` describe the architecture and capability set; keep them aligned with behavior changes.
 - Detailed internal architecture and dependency-boundary guidance lives in `ai/architecture.md`.
+- Per-request query trace semantics, storage, and the WebUI request-detail view live in `ai/query-trace.md`.
 - WebUI-specific guidance lives in `ai/webui.md`; follow it for changes under `webui/`.
 
 ## Build, Test, and Development Commands
@@ -52,10 +54,13 @@
 - Use the feature/bundle recipes declared in `justfile` when `Cargo.toml` feature wiring changes.
 
 Use `cargo check` for a fast compile sanity check and focused `cargo test`
-filters while iterating. For exact runtime CLI syntax, inspect `src/cli/` or
-`oxidns --help`; use `config*.yaml` as runnable examples. Copy formatting,
-linting, bundle, and full-gate invocations from `justfile` or `.githooks/`
-rather than maintaining command variants here.
+filters while iterating. Use `just build-fast` (or `just build-linux-fast` for
+the musl cross build) for incremental local optimized builds; published
+artifacts come from `--release`, and CI sets `CARGO_INCREMENTAL=0` so
+incremental state is never cached or reused there. For exact runtime CLI
+syntax, inspect `src/cli/` or `oxidns --help`; use `config*.yaml` as runnable
+examples. Copy formatting, linting, bundle, and full-gate invocations from
+`justfile` or `.githooks/` rather than maintaining command variants here.
 
 ## Coding Style & Naming Conventions
 

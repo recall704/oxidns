@@ -83,6 +83,13 @@ impl Matcher for QtypeMatcher {
             .iter()
             .any(|q| self.qtypes.contains(&u16::from(q.qtype())))
     }
+
+    fn evidence(&self, context: &DnsContext) -> Option<String> {
+        context
+            .request()
+            .first_question()
+            .map(|question| question.qtype().to_string())
+    }
 }
 
 #[cfg(test)]

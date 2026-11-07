@@ -9,7 +9,7 @@ use flate2::write::ZlibEncoder;
 use flate2::{Compression, Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Serialize};
 
-use super::model::{EdnsJson, RecordJson, RecordRow};
+use super::model::{EdnsJson, RecordJson, RecordRow, StepAnnotation};
 use crate::infra::error::{DnsError, Result};
 
 const VERSION: i64 = 1;
@@ -34,6 +34,8 @@ pub(super) struct ResponseSnapshot {
     pub(super) additionals_json: Vec<RecordJson>,
     pub(super) signature_json: Vec<RecordJson>,
     pub(super) resp_edns_json: Option<EdnsJson>,
+    #[serde(default)]
+    pub(super) step_annotations: Vec<StepAnnotation>,
 }
 
 #[derive(Serialize)]
@@ -44,15 +46,20 @@ struct SnapshotRef<'a> {
     additionals_json: &'a [RecordJson],
     signature_json: &'a [RecordJson],
     resp_edns_json: &'a Option<EdnsJson>,
+    step_annotations: &'a [StepAnnotation],
 }
 
 impl EncodedPayload {
     #[cfg(test)]
     pub(super) fn encode(record: &RecordRow) -> Result<Self> {
-        Self::encode_with_compression(record, true)
+        Self::encode_with_compression(record, &[], true)
     }
 
-    pub(super) fn encode_with_compression(record: &RecordRow, compress: bool) -> Result<Self> {
+    pub(super) fn encode_with_compression(
+        record: &RecordRow,
+        step_annotations: &[StepAnnotation],
+        compress: bool,
+    ) -> Result<Self> {
         let raw = serde_json::to_vec(&SnapshotRef {
             req_edns_json: &record.req_edns_json,
             answers_json: &record.answers_json,
@@ -60,6 +67,7 @@ impl EncodedPayload {
             additionals_json: &record.additionals_json,
             signature_json: &record.signature_json,
             resp_edns_json: &record.resp_edns_json,
+            step_annotations,
         })?;
         Self::encode_json(raw, compress)
     }

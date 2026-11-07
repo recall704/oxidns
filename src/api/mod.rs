@@ -75,6 +75,10 @@ pub fn register_builtin_routes() -> Result<()> {
         metrics::register_builtin_routes(&register)?;
         logs::register_log_routes(&register)?;
         build::register_builtin_routes(&register)?;
+        #[cfg(feature = "provider-sqlite-rule")]
+        if let Some(store) = crate::rule_store::global() {
+            crate::rule_store::api::register_global(&store)?;
+        }
         #[cfg(feature = "plugin-upgrade")]
         upgrade::register_upgrade_routes(&register)?;
     }

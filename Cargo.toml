@@ -184,6 +184,7 @@ standard = [
     "upstream-doq",
     "provider-protobuf",
     "provider-adguard-rule",
+    "provider-sqlite-rule",
     "plugin-client-ip-from-ecs",
     "plugin-arbitrary",
     "plugin-response",
@@ -334,6 +335,10 @@ provider-protobuf = ["dep:prost"]
 # `adguard_rule` provider.
 provider-adguard-rule = []
 
+# `sqlite_rule_set` provider plus the top-level `rule_db` management surface
+# (bundled SQLite rule persistence, runtime CRUD API, and WebUI rule page).
+provider-sqlite-rule = ["dep:rusqlite"]
+
 # --- Private aggregator features -------------------------------------------
 # These are pulled in by the public features above and should not be
 # enabled directly. They exist so each crate group is declared once.
@@ -418,11 +423,28 @@ path = "src/lib.rs"
 doctest = false
 
 
+[profile.dev]
+# Local development builds reuse incremental artifacts.
+incremental = true
+
+# Fast local optimized build. Keeps optimizations and symbol stripping but
+# disables fat LTO and enables incremental compilation, so repeated local
+# builds (including cross builds) are much faster. Never use this profile for
+# published artifacts.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+# Release artifacts are built from scratch in CI; incremental artifacts are
+# large and not reused across runners.
+incremental = false
 
 # Release build that keeps symbols, so Callgrind can attribute instruction
 # counts in the hotpath Criterion benchmarks.

@@ -322,10 +322,13 @@ impl PluginFactory for UdpServerFactory {
             UdpServer {
                 tag: plugin_config.tag.clone(),
                 listen,
-                request_handle: Arc::new(RequestHandle {
+                request_handle: Arc::new(RequestHandle::new(
                     entry_executor,
-                    metrics: Some(metrics.clone()),
-                }),
+                    plugin_config.tag.clone(),
+                    "udp",
+                    Some(listen),
+                    Some(metrics.clone()),
+                )),
                 metrics,
                 shutdown_tx: watch::channel(false).0,
                 task_handle: Mutex::new(None),
@@ -427,10 +430,13 @@ mod tests {
         let mut server = UdpServer {
             tag: tag.clone(),
             listen: blocker.local_addr().unwrap().as_socket().unwrap(),
-            request_handle: Arc::new(RequestHandle {
-                entry_executor: executor.into(),
-                metrics: None,
-            }),
+            request_handle: Arc::new(RequestHandle::new(
+                executor.into(),
+                tag.clone(),
+                "udp",
+                Some(blocker.local_addr().unwrap().as_socket().unwrap()),
+                None,
+            )),
             metrics: Arc::new(ServerMetrics::new(tag.clone(), "udp")),
             shutdown_tx: watch::channel(false).0,
             task_handle: Mutex::new(None),

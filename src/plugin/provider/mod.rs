@@ -35,6 +35,8 @@ pub mod geoip;
 #[cfg(feature = "provider-protobuf")]
 pub mod geosite;
 pub mod ip_set;
+#[cfg(feature = "provider-sqlite-rule")]
+pub mod sqlite_rule_set;
 #[cfg(feature = "provider-protobuf")]
 pub(crate) mod v2ray;
 

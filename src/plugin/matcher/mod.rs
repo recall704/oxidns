@@ -53,6 +53,14 @@ pub(crate) use control::{MatcherRuntimeControl, MatcherRuntimeMode};
 pub trait Matcher: Plugin {
     /// is_match checks if the DNS request context matches certain criteria
     fn is_match(&self, context: &mut DnsContext) -> bool;
+
+    /// Optional value observed by the matcher, used by the request path view.
+    ///
+    /// This is only called while path recording is enabled. Matchers that
+    /// cannot name a useful value keep the default.
+    fn evidence(&self, _context: &DnsContext) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -140,6 +148,11 @@ impl MatcherRef {
 
     pub fn is_match(&self, context: &mut DnsContext) -> bool {
         self.evaluate(context).is_match()
+    }
+
+    /// Observed value for the request path view, if the matcher provides one.
+    pub fn evidence(&self, context: &DnsContext) -> Option<String> {
+        self.matcher.evidence(context)
     }
 
     pub(crate) fn evaluate(&self, context: &mut DnsContext) -> MatcherEvaluation {

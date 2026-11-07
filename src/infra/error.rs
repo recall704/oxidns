@@ -101,7 +101,7 @@ pub enum DnsError {
     WinCodeReadError(#[from] wincode::ReadError),
 
     /// rusqlite error
-    #[cfg(feature = "plugin-query-recorder")]
+    #[cfg(any(feature = "plugin-query-recorder", feature = "provider-sqlite-rule"))]
     #[error("rusqlite error: {0}")]
     Rusqlite(#[from] rusqlite::Error),
 

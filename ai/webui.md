@@ -8,6 +8,9 @@ Paths in this guide are relative to `webui/` unless stated otherwise.
 - `app/` uses the Next App Router. The `(console)` route group owns the console shell, dashboard, plugin center, settings page, and full-screen config editor mode.
 - `components/` contains feature components, while `components/ui/` contains shadcn/Radix-style primitives. Prefer composing existing primitives before adding new low-level UI.
 - `components/plugins/` contains plugin-center rendering. Generic card/detail templates live there, and per-plugin overrides live under `components/plugins/kinds/`.
+- The per-request query detail view (path, response content, and topology) is
+  described in `ai/query-trace.md`. Keep its pure trace builder in
+  `lib/query-trace.ts` separate from rendering.
 - `lib/plugin-definitions/` is the source of truth for WebUI plugin kinds, labels, icons, descriptions, and config schemas. Each category has its own file (`executor.ts`, `matcher.ts`, `provider.ts`, `server.ts`); `lib/plugin-definitions.ts` aggregates and exports them all as `pluginKindDefinitions`.
 - `lib/plugin-definitions/docs.ts` holds fallback field-level documentation keyed by plugin kind; it is merged automatically via `withFieldDocs()`. Localized user-facing docs live under `lib/i18n/locales/*/docs.ts`.
 - `lib/i18n/` contains locale state, translation keys, localized WebUI copy, localized plugin definitions, and localized plugin field docs. Keep it aligned whenever adding user-facing UI text or plugin metadata.

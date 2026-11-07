@@ -144,10 +144,13 @@ async fn connection_exit_preserves_accepted_requests_and_releases_writer() {
         let (mut client, stream) = tokio::io::duplex(1024);
         let executor = GatedExecutor::new();
         let metrics = Arc::new(ServerMetrics::new("disconnected".into(), "tcp"));
-        let handler = Arc::new(RequestHandle {
-            entry_executor: executor.clone(),
-            metrics: Some(metrics.clone()),
-        });
+        let handler = Arc::new(RequestHandle::new(
+            executor.clone(),
+            "tcp_test",
+            "tcp",
+            None,
+            Some(metrics.clone()),
+        ));
         let requests = TaskTracker::new();
         let tracked = requests.clone();
         let connection = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -239,10 +242,13 @@ impl<R: Unpin> AsyncWrite for FailedWriter<R> {
 async fn write_failure_closes_connection_while_reader_is_pending() {
     let (mut client, stream) = tokio::io::duplex(1024);
     let executor = GatedExecutor::new();
-    let handler = Arc::new(RequestHandle {
-        entry_executor: executor.clone(),
-        metrics: None,
-    });
+    let handler = Arc::new(RequestHandle::new(
+        executor.clone(),
+        "tcp_test",
+        "tcp",
+        None,
+        None,
+    ));
     let requests = TaskTracker::new();
     let tracked = requests.clone();
     let connection = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -300,10 +306,13 @@ async fn pipelined_requests_can_complete_out_of_order() {
 
     let (client, stream) = tokio::io::duplex(1024);
     let executor = GatedExecutor::new();
-    let handler = Arc::new(RequestHandle {
-        entry_executor: executor.clone(),
-        metrics: None,
-    });
+    let handler = Arc::new(RequestHandle::new(
+        executor.clone(),
+        "tcp_test",
+        "tcp",
+        None,
+        None,
+    ));
     let requests = TaskTracker::new();
     let tracked = requests.clone();
     let connection = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -351,10 +360,13 @@ async fn pipelined_requests_can_complete_out_of_order() {
 async fn cancellation_releases_a_writer_blocked_mid_frame() {
     let (mut client, stream) = tokio::io::duplex(1);
     let executor = GatedExecutor::new();
-    let handler = Arc::new(RequestHandle {
-        entry_executor: executor.clone(),
-        metrics: None,
-    });
+    let handler = Arc::new(RequestHandle::new(
+        executor.clone(),
+        "tcp_test",
+        "tcp",
+        None,
+        None,
+    ));
     let requests = TaskTracker::new();
     let tracked = requests.clone();
     let connection = AbortOnDropHandle::new(tokio::spawn(async move {

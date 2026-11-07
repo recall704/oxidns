@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Sven Shi
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -17,6 +18,13 @@ use crate::proto::{Message, Question};
 const BALANCED_NEGATIVE_GRACE: Duration = Duration::from_millis(100);
 const CONSENSUS_NEGATIVE_VOTES: usize = 2;
 const NEGATIVE_RESPONSE_RANK: u8 = 2;
+
+#[derive(Debug)]
+pub(super) struct UpstreamReply {
+    pub(super) addr: Arc<str>,
+    pub(super) elapsed_ms: u64,
+    pub(super) result: Result<Message>,
+}
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +59,8 @@ enum NegativeResponseKey {
 pub(super) struct SelectedResponse {
     pub(super) message: Message,
     pub(super) disposition: Option<ResponseDisposition>,
+    pub(super) upstream: Option<Arc<str>>,
+    pub(super) elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -62,8 +72,12 @@ struct SelectionState<'a> {
     best_response: Option<Message>,
     best_response_rank: Option<u8>,
     best_response_disposition: Option<ResponseDisposition>,
+    best_upstream: Option<Arc<str>>,
+    best_elapsed_ms: Option<u64>,
     best_negative_response: Option<Message>,
     best_negative_disposition: Option<ResponseDisposition>,
+    best_negative_upstream: Option<Arc<str>>,
+    best_negative_elapsed_ms: Option<u64>,
     negative_votes: usize,
     nxdomain_votes: usize,
     nodata_votes: usize,
@@ -79,15 +93,24 @@ impl<'a> SelectionState<'a> {
             best_response: None,
             best_response_rank: None,
             best_response_disposition: None,
+            best_upstream: None,
+            best_elapsed_ms: None,
             best_negative_response: None,
             best_negative_disposition: None,
+            best_negative_upstream: None,
+            best_negative_elapsed_ms: None,
             negative_votes: 0,
             nxdomain_votes: 0,
             nodata_votes: 0,
         }
     }
 
-    fn record_response(&mut self, response: Message) -> ResponseClass {
+    fn record_response(
+        &mut self,
+        response: Message,
+        upstream: Arc<str>,
+        elapsed_ms: u64,
+    ) -> ResponseClass {
         let disposition = classify_dns_response(&response, self.question);
         let class = response_class(disposition);
         if class == ResponseClass::Negative {
@@ -97,6 +120,8 @@ impl<'a> SelectionState<'a> {
             }
             self.best_negative_response = Some(response);
             self.best_negative_disposition = Some(disposition);
+            self.best_negative_upstream = Some(upstream);
+            self.best_negative_elapsed_ms = Some(elapsed_ms);
             return class;
         }
         let response_rank = response_rank(disposition);
@@ -107,6 +132,8 @@ impl<'a> SelectionState<'a> {
             self.best_response = Some(response);
             self.best_response_rank = Some(response_rank);
             self.best_response_disposition = Some(disposition);
+            self.best_upstream = Some(upstream);
+            self.best_elapsed_ms = Some(elapsed_ms);
         }
         class
     }
@@ -133,6 +160,8 @@ impl<'a> SelectionState<'a> {
         self.best_response.take().map(|message| SelectedResponse {
             message,
             disposition: self.best_response_disposition.take(),
+            upstream: self.best_upstream.take(),
+            elapsed_ms: self.best_elapsed_ms.take(),
         })
     }
 
@@ -142,6 +171,8 @@ impl<'a> SelectionState<'a> {
             .map(|message| SelectedResponse {
                 message,
                 disposition: self.best_negative_disposition.take(),
+                upstream: self.best_negative_upstream.take(),
+                elapsed_ms: self.best_negative_elapsed_ms.take(),
             })
     }
 
@@ -171,7 +202,7 @@ impl<'a> SelectionState<'a> {
 }
 
 pub(super) async fn select_response(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamReply>,
     active_concurrent: usize,
     question: Option<&Question>,
     mode: ResponseSelectionMode,
@@ -191,23 +222,27 @@ pub(super) async fn select_response(
 }
 
 async fn select_fastest(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamReply>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
     let mut state = SelectionState::new(None);
     while let Some(joined) = join_set.join_next().await {
         match joined {
-            Ok(Ok(response)) => {
-                join_set.abort_all();
-                return (
-                    Some(SelectedResponse {
-                        message: response,
-                        disposition: None,
-                    }),
-                    None,
-                    false,
-                );
-            }
-            Ok(Err(err)) => state.record_error(err),
+            Ok(reply) => match reply.result {
+                Ok(response) => {
+                    join_set.abort_all();
+                    return (
+                        Some(SelectedResponse {
+                            message: response,
+                            disposition: None,
+                            upstream: Some(reply.addr),
+                            elapsed_ms: Some(reply.elapsed_ms),
+                        }),
+                        None,
+                        false,
+                    );
+                }
+                Err(err) => state.record_error(err),
+            },
             Err(err) => state.record_join_error(err),
         }
     }
@@ -215,7 +250,7 @@ async fn select_fastest(
 }
 
 async fn select_prefer_positive(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamReply>,
     active_concurrent: usize,
     question: Option<&Question>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
@@ -233,7 +268,7 @@ async fn select_prefer_positive(
 }
 
 async fn select_balanced(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamReply>,
     active_concurrent: usize,
     question: Option<&Question>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
@@ -282,7 +317,7 @@ async fn select_balanced(
 }
 
 async fn select_consensus(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamReply>,
     active_concurrent: usize,
     question: Option<&Question>,
 ) -> (Option<SelectedResponse>, Option<String>, bool) {
@@ -312,7 +347,7 @@ async fn select_consensus(
 }
 
 async fn next_response_class(
-    join_set: &mut JoinSet<Result<Message>>,
+    join_set: &mut JoinSet<UpstreamReply>,
     state: &mut SelectionState<'_>,
 ) -> Option<ResponseClass> {
     loop {
@@ -324,16 +359,18 @@ async fn next_response_class(
 }
 
 fn handle_joined_response(
-    joined: std::result::Result<Result<Message>, JoinError>,
+    joined: std::result::Result<UpstreamReply, JoinError>,
     state: &mut SelectionState<'_>,
 ) -> Option<ResponseClass> {
     state.completed += 1;
     match joined {
-        Ok(Ok(response)) => Some(state.record_response(response)),
-        Ok(Err(err)) => {
-            state.record_error(err);
-            None
-        }
+        Ok(reply) => match reply.result {
+            Ok(response) => Some(state.record_response(response, reply.addr, reply.elapsed_ms)),
+            Err(err) => {
+                state.record_error(err);
+                None
+            }
+        },
         Err(err) => {
             state.record_join_error(err);
             None

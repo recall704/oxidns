@@ -64,6 +64,18 @@ pub enum ConfigError {
     #[error("Invalid network outbound config: {0}")]
     InvalidNetworkOutbound(String),
 
+    #[error("rule_db.import requires rule_db.path to be configured")]
+    RuleDbImportWithoutPath,
+
+    #[error("rule_db.import[{index}] cannot be empty")]
+    EmptyRuleDbImport { index: usize },
+
+    #[error("rule_db.import[{index}].category cannot be empty")]
+    EmptyRuleDbImportCategory { index: usize },
+
+    #[error("rule_db.import[{index}].sources cannot be empty")]
+    EmptyRuleDbImportSources { index: usize },
+
     #[error(
         "Duplicate plugin tag '{tag}' found at plugins[{first_index}] and plugins[{duplicate_index}]"
     )]
@@ -72,6 +84,63 @@ pub enum ConfigError {
         first_index: usize,
         duplicate_index: usize,
     },
+}
+
+/// Import behavior applied the first time a rule database is opened.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuleImportMode {
+    /// Import only when the database does not contain any rules yet.
+    #[default]
+    IfEmpty,
+    /// Merge imported rules into the existing rule set.
+    Merge,
+    /// Delete every stored rule before importing the configured sources.
+    Replace,
+}
+
+/// One startup import entry: either a legacy plain rule source or a
+/// category-scoped group of sources.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum RuleImportEntry {
+    /// Legacy form: `- "&./rules/list.txt"`, assigned to the default category.
+    Plain(String),
+    /// Grouped form:
+    /// `- { category: ad, sources: ["&./rules/ads.txt"] }`.
+    Group(RuleImportGroup),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleImportGroup {
+    /// Category assigned to every rule imported from `sources`.
+    pub category: String,
+    /// Inline rules or `&path` file references.
+    #[serde(default)]
+    pub sources: Vec<String>,
+}
+
+/// SQLite-backed rule database shared by the management API and
+/// `sqlite_rule_set` providers.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleDbConfig {
+    /// Database file path. An empty path disables the rule database.
+    #[serde(default)]
+    pub path: String,
+    /// Startup rule sources, optionally grouped by category.
+    #[serde(default)]
+    pub import: Vec<RuleImportEntry>,
+    /// How `import` entries are applied to an existing database.
+    #[serde(default)]
+    pub import_mode: RuleImportMode,
+}
+
+impl RuleDbConfig {
+    pub fn is_enabled(&self) -> bool {
+        !self.path.trim().is_empty()
+    }
 }
 
 /// Main server configuration
@@ -96,6 +165,11 @@ pub struct Config {
     /// Shared network policy configuration.
     #[serde(default)]
     pub network: NetworkConfig,
+
+    /// Optional SQLite rule database used by the management API, the WebUI
+    /// rule page, and `sqlite_rule_set` providers.
+    #[serde(default)]
+    pub rule_db: RuleDbConfig,
 
     /// List of plugins to load and their configurations
     #[serde(default)]
@@ -156,6 +230,30 @@ impl Config {
         }
 
         self.network.validate()?;
+
+        if self.rule_db.path.trim().is_empty() && !self.rule_db.import.is_empty() {
+            return Err(ConfigError::RuleDbImportWithoutPath);
+        }
+        for (index, entry) in self.rule_db.import.iter().enumerate() {
+            match entry {
+                RuleImportEntry::Plain(source) => {
+                    if source.trim().is_empty() {
+                        return Err(ConfigError::EmptyRuleDbImport { index });
+                    }
+                }
+                RuleImportEntry::Group(group) => {
+                    if group.category.trim().is_empty() {
+                        return Err(ConfigError::EmptyRuleDbImportCategory { index });
+                    }
+                    if group.sources.is_empty() {
+                        return Err(ConfigError::EmptyRuleDbImportSources { index });
+                    }
+                    if group.sources.iter().any(|source| source.trim().is_empty()) {
+                        return Err(ConfigError::EmptyRuleDbImport { index });
+                    }
+                }
+            }
+        }
 
         // Validate plugins - basic structure checks
         let mut seen_tags = HashMap::new();
@@ -876,6 +974,7 @@ mod tests {
             api: ApiConfig::default(),
             log: LogConfig::default(),
             network: NetworkConfig::default(),
+            rule_db: RuleDbConfig::default(),
             plugins: vec![plugin("dup", "debug_print"), plugin("dup", "ttl")],
         };
 
@@ -893,6 +992,7 @@ mod tests {
             api: ApiConfig::default(),
             log: LogConfig::default(),
             network: NetworkConfig::default(),
+            rule_db: RuleDbConfig::default(),
             plugins: vec![plugin("test", "")],
         };
 
@@ -947,6 +1047,7 @@ mod tests {
                 api: ApiConfig::default(),
                 log: LogConfig::default(),
                 network: NetworkConfig::default(),
+                rule_db: RuleDbConfig::default(),
                 plugins: vec![plugin(tag, "debug_print")],
             };
 
@@ -970,6 +1071,7 @@ mod tests {
                 api: ApiConfig::default(),
                 log: LogConfig::default(),
                 network: NetworkConfig::default(),
+                rule_db: RuleDbConfig::default(),
                 plugins: vec![plugin(tag, "debug_print")],
             };
 
@@ -988,6 +1090,7 @@ mod tests {
             api: ApiConfig::default(),
             log: LogConfig::default(),
             network: NetworkConfig::default(),
+            rule_db: RuleDbConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -1004,6 +1107,7 @@ mod tests {
             api: ApiConfig::default(),
             log: LogConfig::default(),
             network: NetworkConfig::default(),
+            rule_db: RuleDbConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -1035,6 +1139,7 @@ mod tests {
             },
             log: LogConfig::default(),
             network: NetworkConfig::default(),
+            rule_db: RuleDbConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 
@@ -1062,6 +1167,7 @@ mod tests {
             },
             log: LogConfig::default(),
             network: NetworkConfig::default(),
+            rule_db: RuleDbConfig::default(),
             plugins: vec![plugin("ok", "debug_print")],
         };
 

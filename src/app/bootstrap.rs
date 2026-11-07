@@ -24,6 +24,17 @@ pub async fn assemble(
 ) -> Result<AppAssembly> {
     crate::infra::network::metrics::init()?;
 
+    #[cfg(feature = "provider-sqlite-rule")]
+    crate::rule_store::init_global(&config.rule_db)?;
+    #[cfg(not(feature = "provider-sqlite-rule"))]
+    if config.rule_db.is_enabled() {
+        tracing::warn!(
+            "rule_db is configured but this build was compiled without the \
+             `provider-sqlite-rule` feature; rule persistence and the /api/rules \
+             endpoint are unavailable."
+        );
+    }
+
     #[cfg(feature = "api")]
     let api_hub = ApiHub::from_config(&config.api)?;
     #[cfg(feature = "api")]
@@ -134,6 +145,7 @@ mod tests {
                 api: ApiConfig::default(),
                 log: LogConfig::default(),
                 network: NetworkConfig::default(),
+                rule_db: Default::default(),
                 plugins: Vec::new(),
             },
             None,
@@ -169,6 +181,7 @@ mod tests {
                 },
                 log: LogConfig::default(),
                 network: NetworkConfig::default(),
+                rule_db: Default::default(),
                 plugins: Vec::new(),
             },
             None,

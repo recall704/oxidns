@@ -133,6 +133,7 @@ const EXPECTED_ADVANCED_FIELDS: Record<string, string[]> = {
     "batch_size",
     "flush_interval_ms",
   ],
+  "provider/sqlite_rule_set": ["import_mode"],
 };
 
 function collectAdvancedPaths(fields: ConfigField[], parent = ""): string[] {
@@ -183,7 +184,7 @@ function collectRequiredAdvancedPaths(
 
 describe("plugin advanced field classification", () => {
   it("covers the complete plugin registry with the reviewed field paths", () => {
-    expect(pluginKindDefinitions).toHaveLength(65);
+    expect(pluginKindDefinitions).toHaveLength(66);
 
     const actual = Object.fromEntries(
       pluginKindDefinitions

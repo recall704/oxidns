@@ -26,7 +26,7 @@ use super::model::{
 };
 use super::persistence::{
     PreparedRecord, RECORD_COLUMNS, StoredRecord, assemble_records, insert_batch, load_steps,
-    prepare_pending,
+    merge_steps, prepare_pending,
 };
 pub(super) use super::schema::create_schema;
 use crate::infra::error::{DnsError, Result};
@@ -675,7 +675,11 @@ pub(super) fn load_record_detail(
         return Ok(None);
     };
 
-    let steps = load_steps(&conn, &backend.tables, record.trace_id)?;
+    let annotations = record.step_annotations()?;
+    let steps = merge_steps(
+        load_steps(&conn, &backend.tables, record.trace_id)?,
+        annotations,
+    );
     let record = assemble_records(&conn, &backend.tables, vec![record])?
         .pop()
         .ok_or_else(|| DnsError::plugin("query_recorder missing record during assembly"))?;
@@ -1617,6 +1621,14 @@ mod tests {
             additionals_json: Vec::new(),
             signature_json: Vec::new(),
             resp_edns_json: Some(edns),
+            server_tag: Some("udp_main".to_string()),
+            protocol: Some("udp".to_string()),
+            listen: Some("0.0.0.0:53".to_string()),
+            entry_tag: Some("main".to_string()),
+            responder_tag: Some("forward_local".to_string()),
+            responder_kind: Some("forward".to_string()),
+            responder_upstream: Some("223.5.5.5:53".to_string()),
+            responder_elapsed_ms: Some(18),
         }
     }
 }

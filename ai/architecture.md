@@ -25,7 +25,11 @@ The responsibilities are deliberately narrow:
 - A server plugin accepts one inbound protocol, normalizes transport metadata,
   and hands the request to `RequestHandle`.
 - `DnsContext` owns request-local ingress metadata, the request and optional
-  response, execution-path events, marks, and typed runtime extensions.
+  response, execution-path events, marks, the response origin, and typed runtime
+  extensions.
+- The execution path is opt-in. When enabled it carries scoped depth, relative
+  timing, and optional per-step detail for the WebUI request-detail view; when
+  disabled, scopes and event pushes are no-ops. See `ai/query-trace.md`.
 - A matcher evaluates a predicate without owning pipeline control flow.
 - An executor performs an action, composes the next executor when supported,
   and returns an `ExecStep`.
@@ -177,6 +181,8 @@ blocking file or process I/O, unnecessary cloning, high-cardinality metrics,
 and locks whose critical section includes I/O or `.await`. Prepare reusable
 state during plugin initialization and keep persistence, logging, and external
 system reconciliation outside the response-critical path where semantics allow.
+Query-trace scopes, evidence, and responder attribution must remain no-ops or
+single field checks unless a recorder enabled path recording.
 
 Performance work must follow `ai/performance.md`; correctness gates still
 follow `ai/testing-strategy.md`.
